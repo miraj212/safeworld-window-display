@@ -12,8 +12,8 @@ Open it: https://miraj212.github.io/safeworld-window-display/
   analysed in your browser and is never uploaded or stored.
 - Without a camera the page runs a demo. Move the mouse over the poster to play the passerby, and
   click to wave. **Use my camera** asks again.
-- **Setup** holds the distances, the camera angle and a button for each of the robot's moves.
-  Press **H** to hide the controls.
+- The grey buttons along the bottom each play one of the robot's moves.
+- **Setup** holds the distances and the camera angle. Press **H** to hide all the controls.
 
 ## Credits
 
