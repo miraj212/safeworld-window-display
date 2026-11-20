@@ -1,0 +1,1228 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>SafeWorld Window Cell</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700;800&family=Barlow:wght@400;500;600&display=swap">
+<style>
+  /* Poster for a 22 x 35 inch window. A flat paper backdrop with one large colour disc, the
+     realistic robot composited on top, and big condensed type. The disc is the signal:
+     green while the robot runs, yellow as it slows, red when it stops. */
+  :root {
+    color-scheme: light;
+    --paper: #ece8e0;
+    --ink: #14171a;
+    --muted: #5d6166;
+    --line: rgba(20, 23, 26, 0.18);
+    --panel: #ffffff;
+    --run: #17a56c;
+    --slow: #f4b400;
+    --stop: #e2382b;
+    --state: var(--run);
+    --on-state: #ffffff;
+    --font-display: "Barlow Condensed", "Arial Narrow", "Helvetica Neue", Arial, sans-serif;
+    --font-text: "Barlow", "Helvetica Neue", Arial, sans-serif;
+    --pad: 4.4cqw;
+  }
+  body[data-state="slow"] { --state: var(--slow); --on-state: var(--ink); }
+  body[data-state="stop"], body[data-state="hold"] { --state: var(--stop); }
+  /* Setup view is a dark working screen, not the poster */
+  body.details { --paper: #0e161d; --ink: #eef3f6; --muted: #9bacb8; --line: rgba(170, 200, 220, 0.18); --panel: #121d26; }
+
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { background: #000; color: var(--ink); font-family: var(--font-text); overflow: hidden; }
+  [hidden] { display: none !important; }
+
+  /* The stage has the proportions of the window pane, 22 in wide by 35 in tall. It is as large as
+     fits on whatever screen it is shown on, centred, with black around it. */
+  #stage {
+    position: fixed; inset: 0; margin: auto;
+    width: min(100vw, calc(100vh * 22 / 35)); height: min(100vh, calc(100vw * 35 / 22));
+    container-type: size; contain: layout paint size; overflow: hidden; background: var(--paper);
+  }
+  #scene, #gl { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+  body.details #gl, body.details .disc { display: none; }
+
+  .disc {
+    position: fixed; left: var(--disc-x, 50%); top: var(--disc-y, 42%); width: var(--disc-d, 88cqw); aspect-ratio: 1;
+    transform: translate(-50%, -50%); border-radius: 50%; background: var(--state); transition: background-color 0.35s;
+  }
+
+  .brand { position: fixed; top: var(--pad); left: var(--pad); }
+  .brand .word { font-family: var(--font-display); font-weight: 800; font-size: 8.4cqw; line-height: 0.86; letter-spacing: -0.01em; }
+  .brand .sub { margin-top: 1.5cqw; max-width: 34cqw; font-weight: 600; font-size: 1.9cqw; line-height: 1.25; letter-spacing: 0.12em; text-transform: uppercase; }
+
+  .status {
+    position: fixed; top: var(--pad); right: var(--pad);
+    display: flex; align-items: baseline; gap: 0.5em; padding: 0.22em 0.7em 0.26em;
+    border-radius: 999px; background: var(--state); color: var(--on-state);
+    outline: 0.5cqw solid var(--paper);
+    font-family: var(--font-display); font-weight: 700; font-size: 4.6cqw; line-height: 1; letter-spacing: 0.05em; text-transform: uppercase; white-space: nowrap;
+    transition: background-color 0.35s;
+  }
+  .status .spd { display: none; font-variant-numeric: tabular-nums; }
+  .status[data-state="slow"] .spd { display: inline; }
+  .status .spd b { font-weight: 700; }
+
+  .copy { position: fixed; left: var(--pad); right: var(--pad); bottom: calc(var(--pad) + 8cqw); display: grid; gap: 2.2cqw; }
+  .tag { margin: 0; font-family: var(--font-display); font-weight: 800; font-size: 13.6cqw; line-height: 0.85; letter-spacing: -0.005em; text-transform: uppercase; text-wrap: balance; }
+  .subline { margin: 0; font-weight: 500; font-size: 3.1cqw; line-height: 1.25; }
+
+  .modebar { position: fixed; left: var(--pad); bottom: var(--pad); right: var(--pad); display: flex; align-items: center; gap: 1.6cqw; font-size: max(11px, 2.1cqw); color: var(--muted); }
+  .modebar .btns { display: flex; gap: 1.2cqw; }
+  .modebar #modeNote:empty { display: none; }
+  button {
+    font: inherit; font-weight: 600; color: var(--ink); background: transparent;
+    border: 1.5px solid var(--ink); border-radius: 999px; padding: 0.4em 1em; cursor: pointer;
+  }
+  button:hover { background: var(--line); }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 2px solid var(--state); outline-offset: 2px; }
+  button.primary { background: var(--ink); color: var(--paper); }
+  body.kiosk .modebar, body.kiosk .setup { display: none; }
+
+  .setup {
+    position: fixed; right: var(--pad); bottom: calc(var(--pad) + 8cqw); z-index: 5;
+    width: min(92cqw, 24em); max-height: calc(100% - 2 * var(--pad) - 9cqw); overflow: auto;
+    padding: 1.1em 1.2em; display: grid; gap: 0.9em;
+    background: var(--panel); color: var(--ink); border: 1px solid var(--line); border-radius: 12px; font-size: 14px;
+  }
+  .setup h2 { margin: 0; font-family: var(--font-display); font-weight: 700; font-size: 22px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .setup label { display: grid; gap: 0.3em; color: var(--muted); }
+  .setup label span { display: flex; justify-content: space-between; gap: 1em; }
+  .setup label output { color: var(--ink); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .setup input[type="range"] { width: 100%; accent-color: var(--ink); }
+  .setup .check { display: flex; align-items: flex-start; gap: 0.6em; }
+  .setup .row { display: flex; flex-wrap: wrap; gap: 0.6em; }
+  .setup p { margin: 0; color: var(--muted); line-height: 1.45; }
+
+  /* working readouts, Setup view only */
+  .read, .stats { display: none; }
+  body.details .read {
+    position: fixed; top: calc(var(--pad) + 20cqw); left: var(--pad); right: var(--pad); margin: 0;
+    display: grid; grid-template-columns: repeat(3, 1fr); gap: 1em; padding: 0.9em 1.1em;
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px; font-size: max(10px, 2.3cqw);
+  }
+  .read div { display: flex; flex-direction: column; gap: 0.2em; }
+  .read dt { color: var(--muted); }
+  .read dd { margin: 0; font-size: 1.25em; font-variant-numeric: tabular-nums; }
+  .read .formula { grid-column: 1 / -1; color: var(--muted); font-size: 0.85em; }
+  body.details .stats { position: fixed; top: calc(var(--pad) + 40cqw); left: var(--pad); right: var(--pad); display: flex; flex-wrap: wrap; gap: 0.4em 1.6em; font-size: max(10px, 2.2cqw); color: var(--muted); }
+  .stats b { font-weight: 600; color: var(--ink); font-variant-numeric: tabular-nums; }
+  body.details .tag { font-size: 9cqw; }
+
+  @media (prefers-reduced-motion: reduce) { .disc, .status { transition: none; } }
+</style>
+</head>
+<body>
+<div id="stage">
+<div class="disc" aria-hidden="true"></div>
+<canvas id="gl" aria-hidden="true"></canvas>
+<canvas id="scene" aria-label="Robot that slows and stops as people come near"></canvas>
+<video id="video" playsinline muted hidden></video>
+
+<div class="brand">
+  <div class="word">SafeWorld</div>
+  <div class="sub">Safety for robots that work around people</div>
+</div>
+
+<div class="status" id="status" data-state="run" role="status">
+  <span id="stateText">Running</span><span class="spd"><b id="speedVal">100</b>%</span>
+</div>
+
+<dl class="read">
+  <div><dt>Nearest person</dt><dd id="rDist">none</dd></div>
+  <div><dt>Approach speed</dt><dd id="rAppr">0.0 m/s</dd></div>
+  <div><dt>Stops within</dt><dd id="rStop">0.60 m</dd></div>
+  <span class="formula" id="rFormula">Slows within 1.6 m of the window</span>
+</dl>
+
+<div class="stats">
+  <span><span id="sPeopleLabel">People today</span> <b id="sPeople">0</b></span>
+  <span>Safety stops <b id="sStops">0</b></span>
+  <span>Closest approach <b id="sClosest">none</b></span>
+  <span class="zero">Collisions <b>0</b></span>
+</div>
+
+<div class="copy">
+  <p class="tag" id="tag">This robot stops for you.</p>
+  <p class="subline" id="sub">Come closer and see.</p>
+</div>
+
+<div class="modebar" id="modebar">
+  <div class="btns">
+    <button class="primary" id="btnCam" type="button">Use my camera</button>
+    <button id="btnSetup" type="button" aria-expanded="false" aria-controls="setup">Setup</button>
+  </div>
+  <span id="modeNote"></span>
+</div>
+
+<section class="setup" id="setup" hidden aria-label="Setup">
+  <h2>Setup</h2>
+  <label><span>Stops when you are within <output id="oStop">0.60 m (2.0 ft)</output></span>
+    <input type="range" id="inStop" min="0.3" max="2" step="0.05" value="0.6"></label>
+  <label><span>Slows when you are within <output id="oSlow">1.6 m (5.2 ft)</output></span>
+    <input type="range" id="inSlow" min="0.6" max="4" step="0.1" value="1.6"></label>
+  <p>Both are measured from the middle of the window.</p>
+  <label><span>Camera view angle <output id="oF">55°</output></span>
+    <input type="range" id="inF" min="30" max="100" step="1" value="55"></label>
+  <div class="row">
+    <button id="btnCal" type="button">I'm standing 2 m away</button>
+    <button id="btnCalReset" type="button">Reset distance</button>
+  </div>
+  <p id="calNote">Distance is estimated from body size. Stand 2 m from the camera and press the button to calibrate.</p>
+  <label class="check"><input type="checkbox" id="inDetails"> Setup view: show the sidewalk, tracked people and readouts</label>
+  <label><span>Sidewalk depth <output id="oS">1.2 m (4 ft)</output></span>
+    <input type="range" id="inS" min="0.8" max="4" step="0.1" value="1.2"></label>
+  <div class="row">
+    <button id="btnDemo" type="button">Back to demo</button>
+    <button id="btnFull" type="button">Full screen</button>
+    <button id="btnKiosk" type="button">Hide controls</button>
+  </div>
+  <p>Press H to show or hide these controls.</p>
+  <h2>Preview a move</h2>
+  <div class="row" id="moves"></div>
+  <p>These play a move on demand. Sway along has no button: move from side to side in front of it.</p>
+  <p>Robot model: Franka Emika Panda from MuJoCo Menagerie, Apache-2.0.</p>
+</section>
+
+</div>
+
+<script>
+(() => {
+'use strict';
+const $ = id => document.getElementById(id);
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const COL = { bg: '#0e161d', floor: '#17222b', ink: '#eef3f6', muted: '#9bacb8', accent: '#6cc4ff', go: '#3ddc97', slow: '#ffb224', stop: '#ff5a5f', robot: '#f3efe6' };
+const rgba = (hex, a) => { const n = parseInt(hex.slice(1), 16); return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`; };
+const lerp = (a, b, t) => a + (b - a) * t;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const ss = t => t * t * (3 - 2 * t);
+
+const canvas = $('scene'), ctx = canvas.getContext('2d');
+const video = $('video');
+
+/* ---------- settings and counters ---------- */
+const cfg = { v: 3, stopR: 0.6, slowR: 1.6, vfov: 55, calib: 1, sidewalk: 1.2, camPos: 'front', camDist: 3 };
+const G = 0.7;   // metres from the robot's base to the window glass
+/* Both distances are measured from the middle of the window, where the camera is. */
+const bandW = () => Math.max(0.2, cfg.slowR - cfg.stopR);
+const store = {
+  get(k, d) { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch (e) { return d; } },
+  set(k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+};
+const savedCfg = store.get('sw-cell-cfg', {});
+if (savedCfg.v !== cfg.v) { delete savedCfg.stopR; delete savedCfg.slowR; savedCfg.v = cfg.v; }   // older saved distances are replaced by the new defaults
+Object.assign(cfg, savedCfg);
+cfg.camPos = 'front';   // the camera is in the window, above the screen
+const today = new Date().toISOString().slice(0, 10);
+const liveStats = Object.assign({ day: today, people: 0, stops: 0, closest: null }, store.get('sw-cell-stats', {}));
+if (liveStats.day !== today) Object.assign(liveStats, { day: today, people: 0, stops: 0, closest: null });
+const demoStats = { people: 0, stops: 0, closest: null };
+const saveCfg = () => store.set('sw-cell-cfg', cfg);
+const saveStats = () => store.set('sw-cell-stats', liveStats);
+
+/* ---------- virtual camera ----------
+   window: at eye level on the sidewalk, looking straight in at the robot.
+   plan:   high above the street, looking down over the sidewalk into the cell (Setup view). */
+const VIEWS = { window: { eye: [0, 1.45, 4.7], tgt: [0, 0.8, 0] }, plan: { eye: [0, 3.3, 6.4], tgt: [0, 0.5, 0.2] } };
+const cam = { eye: VIEWS.window.eye, tgt: VIEWS.window.tgt, fov: 42 * Math.PI / 180 };
+let Wd = 0, Hd = 0, F = 1, cx = 0, cy = 0, fwd, right, upv;
+function setView() {
+  const v = cfg.details ? VIEWS.plan : VIEWS.window; cam.eye = v.eye; cam.tgt = v.tgt;
+  const sub = (a, b) => [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+  const norm = v => { const l = Math.hypot(v[0], v[1], v[2]); return [v[0] / l, v[1] / l, v[2] / l]; };
+  const cross = (a, b) => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+  fwd = norm(sub(cam.tgt, cam.eye)); right = norm(cross(fwd, [0, 1, 0])); upv = cross(right, fwd);
+}
+function proj(x, y, z) {
+  const vx = x - cam.eye[0], vy = y - cam.eye[1], vz = z - cam.eye[2];
+  const zc = vx * fwd[0] + vy * fwd[1] + vz * fwd[2];
+  if (zc < 0.05) return null;
+  const xc = vx * right[0] + vy * right[1] + vz * right[2], yc = vx * upv[0] + vy * upv[1] + vz * upv[2];
+  return [cx + F * xc / zc, cy - F * yc / zc, F / zc];
+}
+function unprojGround(sx, sy) {
+  const a = (sx - cx) / F, b = -(sy - cy) / F;
+  const d = [right[0] * a + upv[0] * b + fwd[0], right[1] * a + upv[1] * b + fwd[1], right[2] * a + upv[2] * b + fwd[2]];
+  if (d[1] >= -1e-4) return null;
+  const t = -cam.eye[1] / d[1];
+  return [cam.eye[0] + d[0] * t, cam.eye[2] + d[2] * t];
+}
+function resize() {
+  const dpr = Math.min(window.devicePixelRatio || 1, 2);
+  Wd = canvas.clientWidth; Hd = canvas.clientHeight;
+  canvas.width = Math.round(Wd * dpr); canvas.height = Math.round(Hd * dpr);
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  setView();
+  const t = Math.tan(cam.fov / 2);
+  if (cfg.details) F = Wd / Hd < 0.9 ? (Wd / 2) * (5.9 / 2.3) : Math.min((Hd / 2) / t, (Wd / 2) / (t * 1.45));
+  else F = Math.min((Wd / 2) * (4.7 / 1.18), (Hd / 2) * (4.7 / 1.35));   // fit the robot and its two tables to the screen
+  cx = Wd / 2; cy = Hd * (!cfg.details && Wd / Hd < 0.9 ? 0.39 : 0.5);
+  if (!cfg.details) {
+    const dp = proj(0, 0.98, 0), st = $('stage').style;
+    if (dp) { st.setProperty('--disc-x', dp[0] + 'px'); st.setProperty('--disc-y', dp[1] + 'px'); st.setProperty('--disc-d', (2 * 1.06 * dp[2]) + 'px'); }
+  }
+}
+window.addEventListener('resize', resize);
+
+/* ---------- drawing helpers ---------- */
+function line3(a, b, wM, color, cap) {
+  const p = proj(a[0], a[1], a[2]), q = proj(b[0], b[1], b[2]); if (!p || !q) return;
+  ctx.strokeStyle = color; ctx.lineWidth = Math.max(1, wM * (p[2] + q[2]) / 2); ctx.lineCap = cap || 'round';
+  ctx.beginPath(); ctx.moveTo(p[0], p[1]); ctx.lineTo(q[0], q[1]); ctx.stroke();
+}
+function dot3(a, rM, color) {
+  const p = proj(a[0], a[1], a[2]); if (!p) return;
+  ctx.fillStyle = color; ctx.beginPath(); ctx.arc(p[0], p[1], Math.max(1, rM * p[2]), 0, Math.PI * 2); ctx.fill();
+}
+function groundPath(pts) {
+  ctx.beginPath(); let started = false;
+  for (const pt of pts) { const p = proj(pt[0], 0, pt[1]); if (!p) continue; if (started) ctx.lineTo(p[0], p[1]); else { ctx.moveTo(p[0], p[1]); started = true; } }
+  ctx.closePath();
+}
+const ringAt = r => circlePts(r).map(q => [q[0], Math.min(q[1] + G, 5.4)]);   // a circle on the floor around the middle of the window
+function circlePts(r, n) { const a = []; n = n || 80; for (let i = 0; i < n; i++) { const t = i / n * Math.PI * 2; a.push([Math.sin(t) * r, Math.cos(t) * r]); } return a; }
+function quad(pts, fill) {
+  ctx.beginPath();
+  pts.forEach((p, i) => { const q = proj(p[0], p[1], p[2]); if (!q) return; if (i) ctx.lineTo(q[0], q[1]); else ctx.moveTo(q[0], q[1]); });
+  ctx.closePath(); ctx.fillStyle = fill; ctx.fill();
+}
+function box(x0, x1, y0, y1, z0, z1, top, front, side) {
+  if (x0 > 0) quad([[x0, y0, z0], [x0, y0, z1], [x0, y1, z1], [x0, y1, z0]], side);
+  if (x1 < 0) quad([[x1, y0, z0], [x1, y0, z1], [x1, y1, z1], [x1, y1, z0]], side);
+  quad([[x0, y0, z1], [x1, y0, z1], [x1, y1, z1], [x0, y1, z1]], front);
+  quad([[x0, y1, z0], [x1, y1, z0], [x1, y1, z1], [x0, y1, z1]], top);
+}
+function chip(x, y, text, color) {
+  ctx.font = `500 ${Math.round(clamp(Math.max(Wd, Hd) / 90, 12, 22))}px "Barlow", sans-serif`;
+  const w = ctx.measureText(text).width, h = parseInt(ctx.font.match(/(\d+)px/)[1], 10);
+  ctx.fillStyle = rgba(COL.bg, 0.85);
+  ctx.beginPath(); ctx.roundRect(x - w / 2 - 8, y - h / 2 - 5, w + 16, h + 10, 6); ctx.fill();
+  ctx.fillStyle = color; ctx.textAlign = 'center'; ctx.textBaseline = 'middle'; ctx.fillText(text, x, y + 1);
+}
+
+function groundLine(x0, z0, x1, z1, color, lw) {
+  const a = proj(x0, 0, z0), b = proj(x1, 0, z1); if (!a || !b) return;
+  ctx.strokeStyle = color; ctx.lineWidth = lw; ctx.lineCap = 'butt';
+  ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke();
+}
+
+/* ---------- robot ---------- */
+const R = { hs: 0.5, L1: 0.78, L2: 0.72, cycle: 6.4 };   // seconds for the part to go across and come back
+/* whether the robot has turned to look at the person in front of it, and when they last waved */
+const view = { look: 0, lookUntil: 0, waveAt: -1e9 };
+const robot = { u: 0.3, speed: 1, look: 0, work: 1, pauseUntil: 0 };
+function armTarget(u) {
+  const A = -1.25, B = 1.25, lo = 0.58, hi = 1.02;
+  let phi, y, carry, sw = 0;
+  if (u < 0.10) { phi = A; y = lerp(hi, lo, ss(u / 0.10)); carry = false; }
+  else if (u < 0.20) { phi = A; y = lerp(lo, hi, ss((u - 0.10) / 0.10)); carry = true; }
+  else if (u < 0.45) { sw = (u - 0.20) / 0.25; phi = lerp(A, B, ss(sw)); y = hi; carry = true; }
+  else if (u < 0.55) { phi = B; y = lerp(hi, lo, ss((u - 0.45) / 0.10)); carry = true; }
+  else if (u < 0.65) { phi = B; y = lerp(lo, hi, ss((u - 0.55) / 0.10)); carry = false; }
+  else if (u < 0.90) { sw = (u - 0.65) / 0.25; phi = lerp(B, A, ss(sw)); y = hi; carry = false; }
+  else { phi = A; y = hi; carry = false; }
+  return { phi, y, carry, r: 0.95 + 0.3 * Math.sin(Math.PI * sw) };
+}
+function drawRobot(state) {
+  const t = armTarget(robot.u);
+  const dx = t.r, dy = t.y - R.hs;
+  const d = Math.min(Math.hypot(dx, dy), R.L1 + R.L2 - 0.02);
+  const a = Math.atan2(dy, dx);
+  const b = Math.acos(clamp((R.L1 * R.L1 + d * d - R.L2 * R.L2) / (2 * R.L1 * d), -1, 1));
+  const er = R.L1 * Math.cos(a + b), ey = R.hs + R.L1 * Math.sin(a + b);
+  const sx = Math.sin(t.phi), sz = Math.cos(t.phi);
+  const S = [0, R.hs, 0], E = [er * sx, ey, er * sz], T = [t.r * sx, t.y, t.r * sz];
+  const lamp = state === 'run' ? COL.go : state === 'slow' ? COL.slow : COL.stop;
+
+  groundPath(circlePts(0.34, 32)); ctx.fillStyle = '#0a1016'; ctx.fill();
+  line3([0, 0, 0], [0, R.hs, 0], 0.32, '#3a4854', 'butt');
+  line3(S, E, 0.18, COL.robot);
+  line3(E, T, 0.13, COL.robot);
+  line3(T, [T[0], T[1] - 0.1, T[2]], 0.05, '#3a4854', 'butt');
+  if (t.carry) { const c = T; box(c[0] - 0.13, c[0] + 0.13, c[1] - 0.34, c[1] - 0.1, c[2] - 0.13, c[2] + 0.13, '#d9b27c', '#b98f5a', '#a57e4d'); }
+  dot3(E, 0.115, COL.accent);
+  dot3(S, 0.16, COL.accent);
+  dot3(T, 0.07, '#3a4854');
+  /* the shoulder is the robot's eye: the pupil shows its state and follows whoever is nearest */
+  dot3(S, 0.105, '#0b1117');
+  dot3([S[0] + robot.look * 0.055, S[1], S[2]], 0.05, lamp);
+
+  /* stack light, the tower lamp you see beside real machines */
+  const px = -1.2, pz = 0.08;
+  line3([px, 0.3, pz], [px, 0.62, pz], 0.04, '#3a4854', 'butt');
+  const seg = [[COL.go, state === 'run'], [COL.slow, state === 'slow'], [COL.stop, state === 'stop' || state === 'hold']];
+  seg.forEach((s, i) => {
+    const y0 = 0.62 + i * 0.11;
+    if (s[1]) { ctx.shadowColor = s[0]; ctx.shadowBlur = 24; }
+    line3([px, y0, pz], [px, y0 + 0.1, pz], 0.11, s[1] ? s[0] : rgba(s[0], 0.22), 'butt');
+    ctx.shadowBlur = 0;
+  });
+}
+function drawTables() {
+  box(-1.28, -0.58, 0, 0.3, 0.02, 0.6, '#2b3a46', '#22303a', '#1d2932');
+  box(0.58, 1.28, 0, 0.3, 0.02, 0.6, '#2b3a46', '#22303a', '#1d2932');
+  const u = robot.u;
+  if (u >= 0.65 || u < 0.10) box(-1.03, -0.77, 0.3, 0.54, 0.17, 0.43, '#d9b27c', '#b98f5a', '#a57e4d');
+  if (u >= 0.55 && u < 0.97) box(0.77, 1.03, 0.3, 0.54, 0.17, 0.43, '#d9b27c', '#b98f5a', '#a57e4d');
+}
+
+/* ---------- people ---------- */
+const BONES = [['ls', 'rs'], ['ls', 'le'], ['le', 'lw'], ['rs', 're'], ['re', 'rw'], ['ls', 'lh'], ['rs', 'rh'], ['lh', 'rh'], ['lh', 'lk'], ['lk', 'la'], ['rh', 'rk'], ['rk', 'ra']];
+let people = [];       // everyone currently in the scene, from the camera or the demo
+let nextId = 1;
+function walkerJoints(phase, dir, wave) {
+  const s = Math.sin(phase), c = Math.cos(phase), st = 0.24 * dir, ar = 0.17 * dir;
+  const j = {
+    hd: [0.03 * dir, 0.68], ls: [-0.19, 0.5], rs: [0.19, 0.5], lh: [-0.11, 0], rh: [0.11, 0],
+    lk: [-0.11 + st * s * 0.6, -0.45 + 0.04 * Math.max(0, c)], la: [-0.11 + st * s, -0.9 + 0.08 * Math.max(0, c)],
+    rk: [0.11 - st * s * 0.6, -0.45 + 0.04 * Math.max(0, -c)], ra: [0.11 - st * s, -0.9 + 0.08 * Math.max(0, -c)],
+    le: [-0.24 - ar * s * 0.5, 0.22], lw: [-0.25 - ar * s, -0.04], re: [0.24 + ar * s * 0.5, 0.22], rw: [0.25 + ar * s, -0.04]
+  };
+  if (wave) { j.re = [0.36, 0.56]; j.rw = [0.42 + 0.1 * Math.sin(wave), 0.86]; }
+  return j;
+}
+function drawPerson(p) {
+  const col = p.zone === 2 ? COL.stop : p.zone === 1 ? COL.slow : COL.go;
+  groundPath(circlePts(0.3, 20).map(q => [q[0] + p.x, q[1] * 0.6 + p.z])); ctx.fillStyle = rgba('#000000', 0.35); ctx.fill();
+  const w = k => [p.x + p.joints[k][0], Math.max(0.02, p.hipY + p.joints[k][1]), p.z];
+  const ok = k => !p.vis || (p.vis[k] === undefined ? true : p.vis[k] > 0.3);
+  for (const bn of BONES) if (ok(bn[0]) && ok(bn[1])) line3(w(bn[0]), w(bn[1]), 0.075, col);
+  const neck = [(w('ls')[0] + w('rs')[0]) / 2, (w('ls')[1] + w('rs')[1]) / 2, p.z], head = w('hd');
+  line3(neck, head, 0.06, col);
+  dot3(head, 0.125, col); dot3(head, 0.075, COL.bg);
+  for (const k of ['ls', 'rs', 'le', 're', 'lw', 'rw', 'lh', 'rh', 'lk', 'rk', 'la', 'ra']) if (ok(k)) dot3(w(k), 0.03, COL.ink);
+  const top = proj(head[0], head[1] + 0.32, p.z);
+  if (top && cfg.details) chip(top[0], top[1], p.dist.toFixed(1) + ' m', col);
+}
+
+/* ---------- demo walkers ---------- */
+let demoWalkers = [], demoSeq = 0, demoWait = 0;
+function spawnWalker(seed) {
+  const side = demoSeq % 2 ? 1 : -1, kind = ['near', 'curious', 'far', 'curious'][demoSeq % 4]; demoSeq++;
+  let path;
+  /* everyone walks along the sidewalk: close to the glass, out by the curb, or stopping to look */
+  const zin = G + Math.min(0.5, cfg.sidewalk * 0.45), zout = G + Math.max(0.3, cfg.sidewalk - 0.12), zmid = G + cfg.sidewalk * 0.6;
+  if (kind === 'far') path = [[-6.8 * side, zout], [6.8 * side, zout]];
+  else if (kind === 'near') path = [[-6.8 * side, zin], [6.8 * side, zin]];
+  else path = [[-6.8 * side, zmid], [-0.3 * side, zin, 2.6], [6.8 * side, zmid]];
+  const w = { id: nextId++, src: 'demo', x: path[0][0], z: path[0][1], path, leg: 1, pause: 0, phase: Math.random() * 6, v: 1.35, dist: 9, approach: 0, hipY: 0.92, born: performance.now() };
+  if (seed) { w.x = seed[0]; w.z = seed[1]; }
+  w.joints = walkerJoints(w.phase, side, 0);
+  demoWalkers.push(w); demoStats.people++;
+}
+function stepDemo(dt) {
+  for (const w of demoWalkers) {
+    if (w.pause > 0) { w.pause -= dt; w.joints = walkerJoints(0, 0, performance.now() / 160); continue; }
+    const t = w.path[w.leg]; if (!t) { w.done = true; continue; }
+    const dx = t[0] - w.x, dz = t[1] - w.z, d = Math.hypot(dx, dz), stepLen = w.v * dt;
+    if (d <= stepLen) { w.x = t[0]; w.z = t[1]; w.leg++; if (t[2]) w.pause = t[2]; }
+    else { w.x += dx / d * stepLen; w.z += dz / d * stepLen; }
+    w.phase += dt * 6.2;
+    const dir = Math.abs(dx) > 0.3 ? Math.sign(dx) * Math.max(0.4, Math.min(1, Math.abs(dx) / (d || 1))) : 0.4;
+    w.joints = walkerJoints(w.phase, dir, 0);
+  }
+  demoWalkers = demoWalkers.filter(w => !w.done);
+  if (!demoWalkers.length) { demoWait -= dt; if (demoWait <= 0) { spawnWalker(); demoWait = 1.4; } }
+}
+const pointer = { x: 0, z: 0, at: 0, person: null };
+canvas.addEventListener('pointermove', e => {
+  if (mode !== 'demo') return;
+  if (cfg.details) {
+    const g = unprojGround(e.offsetX, e.offsetY); if (!g) return;
+    pointer.x = clamp(g[0], -6.5, 6.5); pointer.z = clamp(g[1], G + 0.2, G + cfg.sidewalk + 1.5);
+  } else {
+    /* across the screen = along the sidewalk: the pointer stands in for someone walking past the window */
+    pointer.x = (e.offsetX / Wd - 0.5) * 7; pointer.z = G + Math.min(0.5, cfg.sidewalk * 0.45);
+  }
+  pointer.at = performance.now();
+});
+canvas.addEventListener('pointerleave', () => { pointer.at = 0; });
+canvas.addEventListener('pointerdown', () => { view.waveAt = performance.now(); });   // without a camera, a click stands in for a wave
+
+/* ---------- camera tracking ----------
+   A person detector finds people. It works on a profile, a back, or a body cut off by the frame,
+   and it alone decides where each avatar stands. The pose model only adds real arm and head
+   movement when it can clearly see someone; without it the avatar is a simple walking figure,
+   so losing sight of a face never makes the avatar jump or vanish. */
+const MP = 'https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@0.10.14';
+const MODEL = 'https://storage.googleapis.com/mediapipe-models/pose_landmarker/pose_landmarker_lite/float16/1/pose_landmarker_lite.task';
+const DET_MODEL = 'https://storage.googleapis.com/mediapipe-models/object_detector/efficientdet_lite0/float16/1/efficientdet_lite0.tflite';
+let mode = 'demo', landmarker = null, detector = null, stream = null, lastVT = -1, lastPoses = [], lastBoxes = [], holdUntil = 0, lastRawDist = null, tracks = [], ghost = null;
+const JOINT_IDX = { hd: 0, ls: 11, rs: 12, le: 13, re: 14, lw: 15, rw: 16, lh: 23, rh: 24, lk: 25, rk: 26, la: 27, ra: 28 };
+async function loadModel() {
+  if (landmarker && detector) return;
+  const mp = await import(MP + '/vision_bundle.mjs');
+  const files = await mp.FilesetResolver.forVisionTasks(MP + '/wasm');
+  const withFallback = async make => { try { return await make('GPU'); } catch (e) { return await make('CPU'); } };
+  if (!detector) detector = await withFallback(delegate => mp.ObjectDetector.createFromOptions(files, {
+    baseOptions: { modelAssetPath: DET_MODEL, delegate }, runningMode: 'VIDEO', scoreThreshold: 0.3, maxResults: 6, categoryAllowlist: ['person']
+  }));
+  if (!landmarker) landmarker = await withFallback(delegate => mp.PoseLandmarker.createFromOptions(files, {
+    baseOptions: { modelAssetPath: MODEL, delegate }, runningMode: 'VIDEO', numPoses: 2,
+    minPoseDetectionConfidence: 0.6, minPosePresenceConfidence: 0.6, minTrackingConfidence: 0.6
+  }));
+}
+function note(t) { $('modeNote').textContent = t; }
+async function startCamera() {
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { note('This view can\'t use a camera. Open this page in Chrome.'); return; }
+  $('btnCam').disabled = true; note('Starting the camera…');
+  try {
+    stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }, audio: false });
+  } catch (e) {
+    $('btnCam').disabled = false;
+    note(e.name === 'NotAllowedError' ? 'Camera access was blocked. Allow the camera for this page, or open it in Chrome, then try again.'
+      : e.name === 'NotFoundError' ? 'No camera was found on this computer.'
+      : 'The camera could not start. Close other apps using it, then try again.');
+    return;
+  }
+  video.srcObject = stream;
+  try { await video.play(); } catch (e) {}
+  note('Loading person tracking…');
+  try { await loadModel(); }
+  catch (e) { stopCamera(); note('Person tracking could not load. Check the internet connection, then try again.'); return; }
+  mode = 'camera'; people = []; tracks = []; ghost = null; demoWalkers = []; pointer.at = 0;
+  $('btnCam').hidden = true; $('btnCam').disabled = false;
+  $('sPeopleLabel').textContent = 'People today';
+  note('Camera on. Video stays on this computer.');
+  setTimeout(() => { if (mode === 'camera') note(''); }, 5000);
+}
+function stopCamera() {
+  if (stream) stream.getTracks().forEach(t => t.stop());
+  stream = null; video.srcObject = null; mode = 'demo'; people = []; tracks = []; ghost = null; lastPoses = []; lastBoxes = []; holdUntil = 0;
+  $('btnCam').hidden = false; $('btnCam').disabled = false;
+  note('');
+}
+function iou(a, b) {
+  const x0 = Math.max(a.bx, b.bx), y0 = Math.max(a.by, b.by), x1 = Math.min(a.bx + a.bw, b.bx + b.bw), y1 = Math.min(a.by + a.bh, b.by + b.bh);
+  const inter = Math.max(0, x1 - x0) * Math.max(0, y1 - y0);
+  return inter / ((a.bw * a.bh + b.bw * b.bh - inter) || 1);
+}
+function poseOverlay(g, aspect) {
+  /* real joint positions in metres, placed on the stock figure (whose shoulders sit 0.5 m above its hips) */
+  const lm = g.lm, v = g.v;
+  const hx = (lm[23].x + lm[24].x) / 2, hy = (lm[23].y + lm[24].y) / 2;
+  const torso = Math.hypot((g.shx - hx) * aspect, g.shy - hy), shW = Math.hypot((lm[11].x - lm[12].x) * aspect, lm[11].y - lm[12].y);
+  const perM = Math.max(Math.min(v(23), v(24)) > 0.5 ? torso / 0.5 : 0, shW / 0.38, 1e-4);
+  const joints = {};
+  for (const k in JOINT_IDX) {
+    const l = lm[JOINT_IDX[k]], jx = -(l.x - g.shx) * aspect / perM, jy = -(l.y - g.shy) / perM;
+    if (v(JOINT_IDX[k]) > 0.55 && Math.hypot(jx, jy) < 1.3) joints[k] = [jx, jy + 0.5];   // unsure or impossible joints are left to the stock figure
+  }
+  return { joints, size: 1 / perM };
+}
+function ingest(dets, poses) {
+  const now = performance.now(), vw = video.videoWidth || 1280, vh = video.videoHeight || 720, aspect = vw / vh;
+  const tanV = Math.tan(cfg.vfov * Math.PI / 360), tanH = tanV * aspect;
+  /* 1. person boxes, biggest first, with doubles of the same person merged */
+  const boxes = [];
+  for (const d of dets) {
+    const b = d.boundingBox, c = d.categories && d.categories[0]; if (!b) continue;
+    if (c && c.categoryName && c.categoryName !== 'person') continue;
+    const m = { bx: b.originX / vw, by: b.originY / vh, bw: b.width / vw, bh: b.height / vh, score: c ? c.score : 0.5 };
+    if (m.bh < 0.2 && m.bw < 0.1) continue;                      // tiny: someone far off, across the street
+    m.cx = m.bx + m.bw / 2; boxes.push(m);
+  }
+  boxes.sort((a, b) => b.score - a.score);   // the surest box wins over a looser one around the same person
+  const kept = [];
+  for (const m of boxes) if (!kept.some(k => iou(k, m) > 0.35 || (m.cx > k.bx && m.cx < k.bx + k.bw) || (k.cx > m.bx && k.cx < m.bx + m.bw))) kept.push(m);
+  /* 2. poses the model is sure about, again with doubles removed */
+  const good = [];
+  for (const lm of poses) {
+    if (!lm || lm.length < 29) continue;
+    const v = k => lm[k].visibility === undefined ? 1 : lm[k].visibility;
+    if (Math.min(v(11), v(12)) < 0.6) continue;
+    const shx = (lm[11].x + lm[12].x) / 2, shy = (lm[11].y + lm[12].y) / 2;
+    if (good.some(o => Math.abs(o.shx - shx) < 0.12 && Math.abs(o.shy - shy) < 0.15)) continue;
+    good.push({ lm, v, shx, shy });
+  }
+  lastBoxes = kept; lastPoses = good.map(g => g.lm);
+  /* 3. one measurement per person */
+  const meas = [];
+  for (const m of kept) {
+    const cut = m.by + m.bh > 0.96 || m.by < 0.02;               // the body runs off the frame, so height alone would read too far away
+    const dH = 1.7 / (2 * tanV * m.bh), dW = 0.46 / (2 * tanH * m.bw);
+    let g = null;
+    for (const o of good) if (!o.used && o.shx > m.bx && o.shx < m.bx + m.bw && o.shy > m.by - 0.05 && o.shy < m.by + m.bh) { g = o; break; }
+    if (g) g.used = true;
+    meas.push({ cx: g ? g.shx : m.cx, raw: g ? poseOverlay(g, aspect).size / (2 * tanV) : cut ? Math.min(dH, dW) : dH, g, edge: m.bx < 0.03 || m.bx + m.bw > 0.97 });
+  }
+  for (const g of good) if (!g.used) meas.push({ cx: g.shx, raw: poseOverlay(g, aspect).size / (2 * tanV), g, edge: Math.abs(g.shx - 0.5) > 0.42 });   // the detector missed them
+  lastRawDist = meas.length ? Math.min.apply(null, meas.map(m => m.raw)) : null;
+  /* 4. match to the people already being followed, by where they are across the picture */
+  for (const t of tracks) t.matched = false;
+  meas.sort((a, b) => a.raw - b.raw);
+  for (const m of meas) {
+    let best = null, bd = 0.28;
+    for (const t of tracks) { if (t.matched) continue; const dd = Math.abs(t.cx - m.cx); if (dd < bd) { bd = dd; best = t; } }
+    const d = clamp(m.raw * cfg.calib, 0.3, 9), x = -(m.cx - 0.5) * aspect * 2 * d * tanV, z = clamp(G + d, G + 0.1, G + cfg.sidewalk + 2.5);
+    if (!best) {
+      if (tracks.length >= 3) continue;
+      best = { id: nextId++, src: 'cam', x, z, cx: m.cx, hits: 0, phase: 0, vx: 0, hipY: 0.92, joints: walkerJoints(0, 0, 0), dist: Math.hypot(x, z - G), approach: 0, born: now };
+      tracks.push(best);
+    }
+    const px = best.x;
+    best.x += (x - best.x) * 0.35; best.z += (z - best.z) * 0.25; best.cx += (m.cx - best.cx) * 0.6;
+    best.vx = best.vx * 0.7 + (best.x - px) * 0.3;               // metres per camera frame, smoothed
+    best.phase += Math.min(0.5, Math.abs(best.vx) * 9);
+    /* the stock figure, walking when the person moves, with every joint the pose model is sure of laid over it */
+    const target = walkerJoints(best.phase, Math.abs(best.vx) > 0.012 ? Math.sign(best.vx) : 0, 0);
+    if (m.g) { const o = poseOverlay(m.g, aspect).joints; for (const k in o) target[k] = o[k]; }
+    for (const k in target) { const j = best.joints[k]; j[0] += (target[k][0] - j[0]) * 0.4; j[1] += (target[k][1] - j[1]) * 0.4; }
+    if (m.g) {                                                    // a raised hand moving side to side is a wave
+      const lm = m.g.lm, span = Math.abs(lm[11].x - lm[12].x) || 0.1;
+      let wx = null;
+      for (const pair of [[15, 11], [16, 12]]) if (m.g.v(pair[0]) > 0.5 && lm[pair[0]].y < lm[pair[1]].y - 0.02) wx = lm[pair[0]].x;
+      best.wave = wx !== null && best.wx != null ? (best.wave || 0) * 0.9 + Math.abs(wx - best.wx) / span : (best.wave || 0) * 0.8;
+      best.wx = wx;
+      if (best.wave > 0.9 && now - view.waveAt > 4000) { view.waveAt = now; best.wave = 0; }
+    }
+    best.edge = m.edge; best.matched = true; best.seen = now; best.hits++;
+  }
+}
+/* ---------- safety logic ---------- */
+let sDraw = cfg.stopR, payoffUntil = 0, restartAt = 0;
+function stats() { return mode === 'camera' ? liveStats : demoStats; }
+function updatePeople(dt, now) {
+  if (mode === 'demo') {
+    /* simulated passers-by only appear in the Setup view, where you can see them */
+    if (cfg.details) { stepDemo(dt); people = demoWalkers.slice(); } else { demoWalkers = []; people = []; }
+    if (pointer.at && (!cfg.details || now - pointer.at < 4000)) {
+      if (!pointer.person) { pointer.person = { id: nextId++, src: 'pointer', x: pointer.x, z: pointer.z, dist: 9, approach: 0, hipY: 0.92, born: now }; demoStats.people++; }
+      const pp = pointer.person; pp.x += (pointer.x - pp.x) * Math.min(1, dt * 7); pp.z += (pointer.z - pp.z) * Math.min(1, dt * 7);
+      pp.joints = walkerJoints(0, 0, now / 170); people.push(pp);
+    } else if (pointer.person) { finishPerson(pointer.person, now); pointer.person = null; }
+  } else {
+    const keep = [];
+    for (const t of tracks) {
+      if (now - t.seen > 600) {
+        /* lost sight of someone who was close and did not walk out of the picture: hold still */
+        if (t.hits >= 15 && !t.edge && t.dist < t.S + bandW()) { holdUntil = now + 1200; ghost = t; }
+        if (t.hits >= 4) finishPerson(t, now);
+      } else keep.push(t);
+    }
+    tracks = keep;
+    people = tracks.filter(t => t.hits >= 4);      // shown only after a few sightings, so one-frame flickers never appear
+    if (ghost && people.length) holdUntil = 0;     // they are back in view, so normal rules apply again
+    if (now >= holdUntil) ghost = null;
+  }
+  const st = stats();
+  for (const p of people) {
+    const nd = Math.hypot(p.x, p.z - G);
+    const inst = clamp((p.dist - nd) / Math.max(dt, 1e-3), -4, 4);
+    p.approach += (inst - p.approach) * Math.min(1, dt * 3);
+    p.dist = nd;
+    p.S = cfg.stopR;
+    if (p.inStop) { if (p.dist > p.S + 0.08) p.inStop = false; }
+    else if (p.dist <= p.S) { p.inStop = true; if (!p.wasInStop) { p.wasInStop = true; st.stops++; if (mode === 'camera') saveStats(); } }
+    const outer = p.S + bandW();
+    if (p.inSlow) { if (p.dist > outer + 0.1) p.inSlow = false; } else if (p.dist <= outer) p.inSlow = true;
+    p.zone = p.inStop ? 2 : p.inSlow ? 1 : 0;
+    if (p.wasInStop && p.zone === 0) { p.wasInStop = false; payoffUntil = now + 7000; }
+    if (now - p.born > 1200) {
+      if (p.src === 'cam' && !p.counted) { p.counted = true; liveStats.people++; saveStats(); }
+      if (st.closest === null || p.dist < st.closest) { st.closest = Math.round(p.dist * 10) / 10; if (mode === 'camera') saveStats(); }
+    }
+  }
+}
+function finishPerson(p, now) { if (p.wasInStop) payoffUntil = now + 7000; }
+for (const w of []) finishPerson(w, 0);
+
+/* ---------- the two views ---------- */
+/* Display view: the screen is the window, and all you see through it is the robot at work.
+   Nobody outside is drawn. The robot reacts to them and its eye follows them. */
+function drawWindow() {
+  ctx.fillStyle = COL.bg; ctx.fillRect(0, 0, Wd, Hd);
+  quad([[-14, 0, -2.6], [14, 0, -2.6], [14, 14, -2.6], [-14, 14, -2.6]], '#131d26');
+  quad([[-14, 0, -2.6], [14, 0, -2.6], [14, 0, 4.1], [-14, 0, 4.1]], COL.floor);
+  ctx.strokeStyle = 'rgba(170,200,220,0.07)'; ctx.lineWidth = 1;
+  for (let g = -10; g <= 10; g++) { const a = proj(g * 0.8, 0, -2.6), b = proj(g * 0.8, 0, 4.1); if (a && b) { ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); } }
+  for (let g = -2; g <= 3; g++) { const a = proj(-14, 0, g), b = proj(14, 0, g); if (a && b) { ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); } }
+  groundLine(-14, -2.6, 14, -2.6, 'rgba(170,200,220,0.2)', 1.5);
+  /* the floor marking around the robot lights amber as it slows and red once it stops */
+  const lit = state === 'stop' || state === 'hold' ? COL.stop : state === 'slow' ? COL.slow : null;
+  groundPath(circlePts(1.65));
+  if (lit) { ctx.fillStyle = rgba(lit, 0.22); ctx.fill(); }
+  ctx.strokeStyle = lit || 'rgba(170,200,220,0.28)'; ctx.lineWidth = 2.5; ctx.setLineDash([10, 7]); ctx.stroke(); ctx.setLineDash([]);
+  drawTables();
+  drawRobot(state);
+  const vg = ctx.createRadialGradient(cx, cy, Math.min(Wd, Hd) * 0.45, cx, cy, Math.max(Wd, Hd) * 0.8);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, rgba(COL.bg, 0.65));
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, Wd, Hd);
+}
+/* Setup view: a plan of the cell, the sidewalk and the people the camera has found, for checking the tracking. */
+function drawPlan(now, nearest) {
+  /* scene: the robot cell behind the glass, then the sidewalk, then the street */
+  const zGlass = G, zCurb = G + cfg.sidewalk;
+  ctx.fillStyle = COL.bg; ctx.fillRect(0, 0, Wd, Hd);
+  quad([[-14, 0, -2.6], [14, 0, -2.6], [14, 14, -2.6], [-14, 14, -2.6]], '#111a22');
+  quad([[-14, 0, -2.6], [14, 0, -2.6], [14, 0, zGlass], [-14, 0, zGlass]], COL.floor);
+  quad([[-14, 0, zGlass], [14, 0, zGlass], [14, 0, zCurb], [-14, 0, zCurb]], '#3b4b58');
+  quad([[-14, 0, zCurb], [14, 0, zCurb], [14, 0, 5.6], [-14, 0, 5.6]], '#090e12');
+  for (let j = -12; j <= 12; j += 1.5) groundLine(j, zGlass, j, zCurb, 'rgba(10,16,22,0.55)', 1.5);   // paving joints
+  const vg = ctx.createRadialGradient(cx, Hd * 0.6, Hd * 0.45, cx, Hd * 0.6, Math.max(Wd, Hd) * 0.8);
+  vg.addColorStop(0, 'rgba(0,0,0,0)'); vg.addColorStop(1, rgba(COL.bg, 0.6));
+  ctx.fillStyle = vg; ctx.fillRect(0, 0, Wd, Hd);
+
+  ctx.strokeStyle = 'rgba(170,200,220,0.07)'; ctx.lineWidth = 1;
+  for (let g = -13; g <= 13; g++) {
+    let a = proj(g, 0, -2.6), b = proj(g, 0, zGlass); if (a && b) { ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); }
+    if (g >= -2 && g <= 0) { a = proj(-14, 0, g); b = proj(14, 0, g); if (a && b) { ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); } }
+  }
+  /* what the camera can see, from wherever it is mounted */
+  const tanH = Math.tan(cfg.vfov * Math.PI / 360) * ((video.videoWidth / video.videoHeight) || 16 / 9), half = Math.atan(tanH);
+  const side = cfg.camPos === 'left' ? -1 : cfg.camPos === 'right' ? 1 : 0;
+  const camX = side * cfg.camDist, camZ = side ? zGlass + cfg.sidewalk / 2 : zGlass, heading = side ? -side * Math.PI / 2 : 0, reach = side ? 7.5 : 4.4;
+  const wedge = [[camX, camZ]];
+  for (let i = 0; i <= 24; i++) { const t = heading - half + 2 * half * i / 24; wedge.push([camX + Math.sin(t) * reach, clamp(camZ + Math.cos(t) * reach, zGlass, 5.4)]); }
+  if (cfg.details) {
+    groundPath(wedge); ctx.fillStyle = rgba(COL.accent, 0.05); ctx.fill();
+    ctx.strokeStyle = rgba(COL.accent, 0.28); ctx.setLineDash([6, 8]); ctx.lineWidth = 1.5; ctx.stroke(); ctx.setLineDash([]);
+  }
+  /* range rings */
+  ctx.font = `400 ${Math.round(clamp(Wd / 110, 11, 16))}px "Barlow", sans-serif`; ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  for (let r = 1; r <= 3; r++) {
+    groundPath(ringAt(r)); ctx.strokeStyle = 'rgba(170,200,220,0.13)'; ctx.lineWidth = 1; ctx.stroke();
+    const lp = proj(Math.sin(1.02) * r, 0, G + Math.cos(1.02) * r); if (lp && cfg.details) { ctx.fillStyle = rgba(COL.muted, 0.75); ctx.fillText(r + ' m', lp[0] + 6, lp[1]); }
+  }
+  /* slow band and stop zone */
+  groundPath(ringAt(sDraw + bandW())); ctx.fillStyle = rgba(COL.slow, state === 'slow' ? 0.2 : 0.11); ctx.fill();
+  ctx.strokeStyle = rgba(COL.slow, 0.8); ctx.lineWidth = 2; ctx.stroke();
+  groundPath(ringAt(sDraw)); ctx.fillStyle = rgba(COL.stop, state === 'stop' || state === 'hold' ? 0.34 : 0.18); ctx.fill();
+  ctx.strokeStyle = COL.stop; ctx.lineWidth = 2.5; ctx.setLineDash([10, 7]); ctx.stroke(); ctx.setLineDash([]);
+  if (nearest) {
+    const a = proj(0, 0, G), b = proj(nearest.x, 0, nearest.z);
+    if (a && b) { ctx.strokeStyle = rgba(COL.ink, 0.55); ctx.lineWidth = 1.5; ctx.setLineDash([4, 6]); ctx.beginPath(); ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]); ctx.stroke(); ctx.setLineDash([]); }
+  }
+  drawTables();
+  drawRobot(state);
+  /* the window glass, the curb, the camera, and labels */
+  quad([[-14, 0, zGlass], [14, 0, zGlass], [14, 2.8, zGlass], [-14, 2.8, zGlass]], rgba(COL.accent, 0.05));
+  groundLine(-14, zGlass, 14, zGlass, rgba(COL.ink, 0.65), 2);
+  groundLine(-14, zCurb, 14, zCurb, rgba(COL.ink, 0.3), 3);
+  if (cfg.details) {
+  const fs = Math.round(clamp(Math.max(Wd, Hd) / 110, 11, 18)), edge = Math.max(14, Wd * 0.022);
+  ctx.font = `400 ${fs}px "Barlow", sans-serif`; ctx.textBaseline = 'middle';
+  const cp = proj(camX, 0.03, camZ);
+  if (cp) {
+    ctx.fillStyle = COL.bg; ctx.strokeStyle = COL.accent; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.rect(cp[0] - 6, cp[1] - 5, 12, 10); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = COL.accent; ctx.textAlign = 'left'; ctx.fillText('Camera', cp[0] + 12, cp[1] + fs * 0.9);
+  }
+  ctx.fillStyle = rgba(COL.ink, 0.8); ctx.textAlign = 'left';
+  const sl = proj(0, 0, (zGlass + zCurb) / 2); if (sl) ctx.fillText(`Sidewalk ${cfg.sidewalk.toFixed(1)} m (${Math.round(cfg.sidewalk * 3.281)} ft)`, edge, sl[1]);
+  const gl = proj(0, 0, zGlass); if (gl) ctx.fillText('Window glass', edge, gl[1] - fs);
+  ctx.textAlign = 'right';
+  const stl = proj(0, 0, zCurb + 0.5); if (stl) ctx.fillText('Street', Wd - edge, stl[1]);
+  }
+  people.slice().sort((a, b) => a.z - b.z).forEach(drawPerson);
+  if (ghost && now < holdUntil) { ctx.globalAlpha = 0.3; drawPerson(ghost); ctx.globalAlpha = 1; }   // where the lost person was last seen
+}
+
+/* ---------- personality ----------
+   Small moves that make the robot feel aware of the people in front of it. One plays at a time, and a more
+   urgent one replaces a less urgent one. The rule is safety first: the distance logic above has always slowed
+   or stopped the robot before any of these begin, and none of them ever overrides it.
+   Each entry: [urgency, length in milliseconds]. */
+const MOVES = { duck: [9, 2900], search: [8, 1250], excited: [7, 1700], wave: [6, 1700], goodbye: [5, 1600], nod: [4, 950], tilt: [3, 2600], notice: [2, 900], bored: [1, 4500], flourish: [1, 700] };
+const act = { name: null, at: -1e9 };
+const mem = { zone: 0, engaged: false, nodded: false, tiltAt: 0, duckAt: -1e9, waveSeen: view.waveAt, lastWave: -1e9, count: 0, alone: performance.now(), lastX: 0, vx: 0, dir: 0, outDir: 1, flips: [], xAvg: 0, sway: 0, state: 'run', half: 0, byeX: 0 };
+function playing(now) { return act.name && now - act.at < MOVES[act.name][1] ? act.name : null; }
+function play(name, now, force) {
+  const cur = playing(now);
+  if (cur && !force && MOVES[name][0] <= MOVES[cur][0]) return false;
+  act.name = name; act.at = now;
+  if (name !== 'flourish') view.lookUntil = Math.max(view.lookUntil, now + MOVES[name][1] + 150);     // every move but the flourish is done facing the person
+  if (name === 'notice' || name === 'duck' || name === 'bored' || name === 'flourish') robot.pauseUntil = now + MOVES[name][1];
+  return true;
+}
+function direct(now, dt, nearest) {
+  const zone = nearest ? nearest.zone : 0;
+  /* notice: someone has just come into range */
+  if (zone >= 1 && mem.zone === 0 && !mem.engaged) play('notice', now);
+  if (zone === 2 && !mem.engaged) { mem.engaged = true; mem.nodded = false; mem.tiltAt = now; }
+  /* it keeps looking at someone it has stopped for, for as long as they stay close */
+  if (nearest && (state === 'stop' || (mem.engaged && zone >= 1))) view.lookUntil = Math.max(view.lookUntil, now + 300);
+  if (nearest) {
+    /* nod once it has turned to face them, and a curious tilt if they stay a few seconds */
+    if (state === 'stop' && view.look > 0.85 && !mem.nodded && play('nod', now)) mem.nodded = true;
+    if (state === 'stop' && view.look > 0.9 && now - mem.tiltAt > 3000 && play('tilt', now)) mem.tiltAt = now + 6000;
+    /* duck: they rush at it, or come within about a foot */
+    /* a rush means clearly faster than walking: about 2 m/s (4.5 mph) straight at it, from close */
+    if ((nearest.dist < 0.32 || (nearest.approach > 2.0 && nearest.dist < 1.2)) && now - mem.duckAt > 4500) { play('duck', now, true); mem.duckAt = now; }
+    /* sway along: they rock from side to side */
+    const vx = (nearest.x - mem.lastX) / Math.max(dt, 1e-3); mem.vx += (vx - mem.vx) * Math.min(1, dt * 8);
+    if (Math.abs(mem.vx) > 0.12 && Math.sign(mem.vx) !== mem.dir) { mem.dir = Math.sign(mem.vx); mem.flips.push(now); }
+    mem.flips = mem.flips.filter(t => now - t < 3200);
+    mem.xAvg += (nearest.x - mem.xAvg) * Math.min(1, dt * 0.8);
+    const swaying = mem.flips.length >= 3 && view.look > 0.5;
+    mem.sway += ((swaying ? clamp((nearest.x - mem.xAvg) * 4, -1, 1) : 0) - mem.sway) * Math.min(1, dt * 6);
+    mem.lastX = nearest.x; if (Math.abs(mem.vx) > 0.05) mem.outDir = Math.sign(mem.vx);
+  } else { mem.sway += (0 - mem.sway) * Math.min(1, dt * 6); mem.flips.length = 0; }
+  /* wave back, and get excited at a second wave or a second person */
+  if (view.waveAt !== mem.waveSeen) { mem.waveSeen = view.waveAt; play(now - mem.lastWave < 8000 ? 'excited' : 'wave', now); mem.lastWave = now; }
+  if (people.length >= 2 && mem.count < 2 && view.look > 0.5) play('excited', now);
+  /* where did you go? it lost sight of someone who was close */
+  if (state === 'hold' && mem.state !== 'hold') play('search', now);
+  /* goodbye: someone it stopped for has left */
+  if (mem.engaged && zone === 0 && state !== 'hold') { mem.engaged = false; mem.byeX = mem.lastX + mem.outDir * 0.9; play('goodbye', now); }
+  /* bored after a while with nobody about */
+  if (people.length) mem.alone = now; else if (now - mem.alone > 45000) { play('bored', now); mem.alone = now + 20000; }
+  /* now and then, a flourish after setting the part down */
+  const half = (robot.u * 2) % 1;
+  if (mem.half < 0.88 && half >= 0.88 && state === 'run' && !people.length && Math.random() < 0.3) play('flourish', now);
+  mem.half = half; mem.zone = zone; mem.count = people.length; mem.state = state;
+}
+
+/* ---------- frame ---------- */
+let last = performance.now(), hudAt = 0, state = 'run';
+function frame(now) {
+  const dt = Math.min(0.1, (now - last) / 1000); last = now;
+  if (mode === 'camera' && detector && landmarker && video.readyState >= 2 && video.currentTime !== lastVT) {
+    lastVT = video.currentTime;
+    let dets = [], poses = [];
+    try { dets = detector.detectForVideo(video, now).detections || []; } catch (e) {}
+    try { poses = landmarker.detectForVideo(video, now).landmarks || []; } catch (e) {}
+    ingest(dets, poses);
+  }
+  const before = demoWalkers.length;
+  updatePeople(dt, now);
+  if (mode === 'demo' && demoWalkers.length < before) { /* a walker left the scene */ }
+
+  let target = 1, nearest = null;
+  for (const p of people) {
+    const f = p.zone === 2 ? 0 : p.zone === 1 ? clamp(0.12 + 0.88 * (p.dist - p.S) / bandW(), 0.12, 0.97) : 1;
+    if (f < target) target = f;
+    if (!nearest || p.dist < nearest.dist) nearest = p;
+  }
+  const hold = now < holdUntil;
+  if (hold) target = 0;
+  const wantStop = target === 0;
+  if (target === 0) restartAt = now + 150;
+  if (target > robot.speed && now < restartAt) target = robot.speed;
+  robot.speed += (target - robot.speed) * (1 - Math.exp(-dt * (target < robot.speed ? 9 : 5)));
+  if (target === 0 && robot.speed < 0.02) robot.speed = 0;
+  if (target === 1 && robot.speed > 0.985) robot.speed = 1;
+  robot.work += ((now < robot.pauseUntil ? 0 : 1) - robot.work) * (1 - Math.exp(-dt * 8));   // a personality move can make it put its work down for a moment
+  robot.u = (robot.u + dt * robot.speed * robot.work / R.cycle) % 1;
+  const lookTo = nearest ? clamp(nearest.x / 1.6, -1, 1) : Math.sin(armTarget(robot.u).phi) * 0.5;   // watch the nearest person, else its own work
+  robot.look += (lookTo - robot.look) * (1 - Math.exp(-dt * 7));
+  state = hold ? 'hold' : (wantStop || robot.speed === 0) ? 'stop' : robot.speed < 0.985 ? 'slow' : 'run';
+
+  let sMax = cfg.stopR;
+  for (const p of people) if (p.S > sMax) sMax = p.S;
+  sDraw += (sMax - sDraw) * Math.min(1, dt * 6);
+
+  if (cfg.details) drawPlan(now, nearest);
+  else if (window.__cell3d) {                                    // the robot, over the poster
+    direct(now, dt, nearest);
+    const wantLook = now < view.lookUntil, move = playing(now);
+    view.look += ((wantLook ? 1 : 0) - view.look) * (1 - Math.exp(-dt * (wantLook ? 5 : 2.5)));
+    /* where it looks: at the nearest person, after someone who is leaving, or straight out front */
+    const gx = nearest ? nearest.x * 1.3 : move === 'goodbye' ? mem.byeX * 1.3 : wantLook ? (view.gazeX || 0) : 0;
+    view.gazeX = (view.gazeX || 0) + (clamp(gx, -1.8, 1.8) - (view.gazeX || 0)) * (1 - Math.exp(-dt * 6));
+    ctx.clearRect(0, 0, Wd, Hd);
+    window.__cell3d.render({ w: Wd, h: Hd, F, cy, u: robot.u, state, attn: robot.look, look: view.look, gaze: [view.gazeX, 1.45, 4.7], act: move, actT: (now - act.at) / 1000, sway: mem.sway });
+  }
+  else drawWindow();                                                                                                                      // flat drawing until 3D has loaded
+
+  if (now - hudAt > 100) { hudAt = now; updateHud(now, nearest); }
+  requestAnimationFrame(frame);
+}
+
+/* ---------- readouts ---------- */
+const IDLE = [['This robot stops for you.', 'Come closer and see.'], ['Walk past. Watch it react.', 'A live demo of robot safety.']];
+function setText(id, t) { const el = $(id); if (el.textContent !== t) el.textContent = t; }
+function updateHud(now, nearest) {
+  $('status').dataset.state = state; document.body.dataset.state = state;
+  setText('stateText', state === 'run' ? 'Running' : state === 'slow' ? 'Slowed' : state === 'stop' ? (robot.speed === 0 ? 'Stopped' : 'Stopping') : 'Holding');
+  setText('speedVal', String(Math.round(robot.speed * 100)));
+  setText('rDist', nearest ? nearest.dist.toFixed(1) + ' m' : 'none');
+  setText('rAppr', (nearest ? Math.max(0, nearest.approach) : 0).toFixed(1) + ' m/s');
+  setText('rStop', cfg.stopR.toFixed(2) + ' m');
+  setText('rFormula', `Slows within ${cfg.slowR.toFixed(1)} m of the window`);
+  let tag, sub;
+  if (state === 'hold') { tag = 'Lost sight of you.'; sub = 'Holding still until it is sure.'; }
+  else if (state === 'stop') { tag = 'Stopped for you.'; sub = 'It won\'t move until you\'re clear.'; }
+  else if (nearest && nearest.zone === 1) { tag = 'It sees you.'; sub = `Slowed to ${Math.round(robot.speed * 100)}% while you're close.`; }
+  else if (now < payoffUntil) { tag = 'That was a live safety test.'; sub = 'The robot kept its distance from you.'; }
+  else { const i = Math.floor(now / 8000) % IDLE.length; tag = IDLE[i][0]; sub = IDLE[i][1]; }
+  setText('tag', tag); setText('sub', sub);
+  const st = stats();
+  setText('sPeopleLabel', mode === 'camera' ? 'People today' : 'People (demo)');
+  setText('sPeople', String(st.people)); setText('sStops', String(st.stops));
+  setText('sClosest', st.closest === null ? 'none' : st.closest.toFixed(1) + ' m');
+}
+
+/* ---------- controls ---------- */
+function bindRange(id, out, key, fmt) {
+  const el = $(id); el.value = cfg[key]; $(out).textContent = fmt(cfg[key]);
+  el.addEventListener('input', () => { cfg[key] = parseFloat(el.value); $(out).textContent = fmt(cfg[key]); saveCfg(); });
+}
+for (const [name, label] of [['notice', 'Notice'], ['nod', 'Nod'], ['tilt', 'Curious tilt'], ['duck', 'Duck'], ['wave', 'Wave back'], ['excited', 'Excited'], ['search', 'Where did you go?'], ['goodbye', 'Goodbye'], ['bored', 'Bored'], ['flourish', 'Flourish']]) {
+  const b = document.createElement('button'); b.type = 'button'; b.textContent = label;
+  b.addEventListener('click', () => { if (name === 'goodbye') mem.byeX = 1.2; play(name, performance.now(), true); });
+  $('moves').appendChild(b);
+}
+const mft = (v, d) => `${v.toFixed(d)} m (${(v * 3.281).toFixed(1)} ft)`;
+bindRange('inStop', 'oStop', 'stopR', v => mft(v, 2));
+bindRange('inSlow', 'oSlow', 'slowR', v => mft(v, 1));
+bindRange('inF', 'oF', 'vfov', v => Math.round(v) + '°');
+bindRange('inS', 'oS', 'sidewalk', v => `${v.toFixed(1)} m (${Math.round(v * 3.281)} ft)`);
+const syncDetails = () => { document.body.classList.toggle('details', !!cfg.details); resize(); };
+$('inDetails').checked = !!cfg.details; syncDetails();
+$('inDetails').addEventListener('change', e => { cfg.details = e.target.checked; saveCfg(); syncDetails(); });
+$('btnCam').addEventListener('click', startCamera);
+$('btnDemo').addEventListener('click', stopCamera);
+$('btnSetup').addEventListener('click', () => { const s = $('setup'); s.hidden = !s.hidden; $('btnSetup').setAttribute('aria-expanded', String(!s.hidden)); });
+$('btnCal').addEventListener('click', () => {
+  if (mode !== 'camera' || !lastRawDist) { $('calNote').textContent = 'Turn the camera on and stand where it can see you, then press the button.'; return; }
+  cfg.calib = clamp(2 / lastRawDist, 0.3, 3); saveCfg(); $('calNote').textContent = 'Calibrated. You now read as 2.0 m away.';
+});
+$('btnCalReset').addEventListener('click', () => { cfg.calib = 1; saveCfg(); $('calNote').textContent = 'Distance reset to the default estimate.'; });
+$('btnFull').addEventListener('click', () => { const d = document; if (d.fullscreenElement) d.exitFullscreen(); else if (d.documentElement.requestFullscreen) d.documentElement.requestFullscreen().catch(() => {}); });
+const toggleKiosk = () => { document.body.classList.toggle('kiosk'); $('setup').hidden = true; };
+$('btnKiosk').addEventListener('click', toggleKiosk);
+window.addEventListener('keydown', e => { if ((e.key === 'h' || e.key === 'H') && !e.metaKey && !e.ctrlKey) toggleKiosk(); });
+
+/* start: demo is already running; go straight to the camera if it was allowed before */
+resize();
+spawnWalker([3.6, G + Math.min(0.5, cfg.sidewalk * 0.45)]); demoWait = 1.4;
+if (navigator.permissions && navigator.permissions.query) {
+  navigator.permissions.query({ name: 'camera' }).then(r => { if (r.state === 'granted') startCamera(); }).catch(() => {});
+}
+window.__cell = {
+  get mode() { return mode; }, get state() { return state; }, robot, cfg, get people() { return people; }, loadModel, view, mem, play: name => play(name, performance.now(), true), get move() { return playing(performance.now()); },
+  get models() { return { detector: !!detector, pose: !!landmarker }; },
+  /* for testing without a camera: feed detector boxes (in 1280x720 pixels) and poses straight into the tracker */
+  simulate(dets, poses) { if (mode !== 'camera') { mode = 'camera'; people = []; tracks = []; demoWalkers = []; pointer.at = 0; } ingest(dets || [], poses || []); },
+  dryRun() { const c = document.createElement('canvas'); c.width = 320; c.height = 180; c.getContext('2d').fillRect(0, 0, 320, 180); const t = performance.now(); return { boxes: detector.detectForVideo(c, t).detections.length, poses: landmarker.detectForVideo(c, t).landmarks.length }; }
+};
+requestAnimationFrame(frame);
+})();
+</script>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
+<script type="module">
+/* The robot, rendered in 3D like a studio product shot and laid over the flat poster behind it.
+   The canvas is transparent: only the robot, its two stands, the part it carries and their shadows
+   are drawn. The main script above decides what the robot does; this draws it.
+
+   Robot model: Franka Emika Panda, from MuJoCo Menagerie (github.com/google-deepmind/mujoco_menagerie,
+   franka_emika_panda), Apache-2.0, loaded from that project when the page opens. */
+import * as THREE from 'three';
+import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
+import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
+import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+
+try {
+  const canvas = document.getElementById('gl');
+  const renderer = new THREE.WebGLRenderer({ canvas, antialias: true, alpha: true, powerPreference: 'high-performance' });
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+  renderer.setClearColor(0x000000, 0);
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.toneMapping = THREE.ACESFilmicToneMapping;
+  renderer.toneMappingExposure = 0.92;
+  renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+  const scene = new THREE.Scene();
+  scene.environment = new THREE.PMREMGenerator(renderer).fromScene(new RoomEnvironment(renderer), 0.04).texture;
+
+  /* ----- studio lighting: a big soft key from the front left, fill from the right, a cool edge light behind ----- */
+  const key = new THREE.SpotLight(0xfff4e6, 225, 18, Math.PI / 5, 1, 2);
+  key.position.set(-3.0, 5.2, 4.2); key.target.position.set(0.1, 0.5, 0);
+  key.castShadow = true; key.shadow.mapSize.set(2048, 2048); key.shadow.bias = -0.0003; key.shadow.normalBias = 0.02;
+  key.shadow.camera.near = 2; key.shadow.camera.far = 14;
+  const fill = new THREE.SpotLight(0xffffff, 18, 16, Math.PI / 4, 1, 2); fill.position.set(3.6, 2.6, 4.0); fill.target.position.set(0, 0.7, 0);
+  const edge = new THREE.SpotLight(0xbcd9ff, 150, 14, Math.PI / 5, 0.8, 2); edge.position.set(2.6, 3.6, -2.6); edge.target.position.set(0, 0.9, 0);
+  scene.add(key, key.target, fill, fill.target, edge, edge.target, new THREE.HemisphereLight(0xffffff, 0xb9b3a8, 0.06));
+
+  /* ----- materials ----- */
+  const std = (color, o) => new THREE.MeshStandardMaterial(Object.assign({ color, roughness: 0.5, metalness: 0, envMapIntensity: 0.7 }, o));
+  const shell = c => new THREE.MeshPhysicalMaterial({ color: c, roughness: 0.4, metalness: 0, clearcoat: 0.5, clearcoatRoughness: 0.3, envMapIntensity: 0.22 });
+  const dark = std(0x1b1f23, { roughness: 0.4, metalness: 0.55 });
+  const stand = std(0x0f1113, { roughness: 0.5, metalness: 0.15, envMapIntensity: 0.35 });
+  const partMat = std(0x7e868d, { roughness: 0.32, metalness: 0.95, envMapIntensity: 1 });
+  const led = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, emissive: 0x17a56c, emissiveIntensity: 2.2, roughness: 0.4 });
+  const ledHot = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, emissive: 0xffffff, emissiveIntensity: 3, roughness: 0.4 });
+  const eyeRing = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, emissive: 0x17a56c, emissiveIntensity: 3, roughness: 0.4 });
+  /* the robot's own finishes, named as in the model's description */
+  const MAT = {
+    white: shell(0xd3d1cc), off_white: shell(0xc4c9cc),
+    black: std(0x232528, { roughness: 0.5, metalness: 0.2, envMapIntensity: 0.5 }),
+    light_blue: std(0x0a8ac7, { roughness: 0.4, envMapIntensity: 0.6 }),
+    green: eyeRing                                   // its small status light shows the state, like the eye ring
+  };
+
+  /* ----- small builders ----- */
+  const shade = m => { m.castShadow = true; m.receiveShadow = true; return m; };
+  const cyl = (rTop, rBottom, h, mat, seg) => shade(new THREE.Mesh(new THREE.CylinderGeometry(rTop, rBottom, h, seg || 56), mat));
+  const rbox = (w, h, d, r, mat) => shade(new THREE.Mesh(new RoundedBoxGeometry(w, h, d, 5, r), mat));
+  const at = (obj, x, y, z) => { obj.position.set(x, y, z); return obj; };
+  const ss = t => t * t * (3 - 2 * t), lerp = (a, b, t) => a + (b - a) * t, clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+
+  /* ----- the floor only exists as shadows: cast shadows plus soft contact shading under each object ----- */
+  const floor = new THREE.Mesh(new THREE.PlaneGeometry(30, 30), new THREE.ShadowMaterial({ opacity: 0.26 }));
+  floor.rotation.x = -Math.PI / 2; floor.receiveShadow = true; scene.add(floor);
+  const soft = (() => {
+    const c = document.createElement('canvas'); c.width = c.height = 256; const g = c.getContext('2d');
+    const gr = g.createRadialGradient(128, 128, 0, 128, 128, 128);
+    gr.addColorStop(0, 'rgba(255,255,255,1)'); gr.addColorStop(0.45, 'rgba(255,255,255,0.45)'); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    g.fillStyle = gr; g.fillRect(0, 0, 256, 256); return new THREE.CanvasTexture(c);
+  })();
+  const blob = (size, color, opacity, y) => {
+    const m = new THREE.Mesh(new THREE.PlaneGeometry(size, size), new THREE.MeshBasicMaterial({ map: soft, color, transparent: true, opacity, depthWrite: false, toneMapped: false }));
+    m.rotation.x = -Math.PI / 2; m.position.y = y; return m;
+  };
+
+  /* ----- sizes. The robot is shown 1.6 times life size on a low plinth; its hand and the part scale with it. ----- */
+  const SCALE = 1.6, PED = 0.16;
+  const STAND = 0.30, TOP = STAND + 0.012, RP = 0.8, A = -1.25, B = 1.25;
+  const PART = 0.06, GRASP = 0.103;                    // in the robot's own units: size of the part, and how far out from the hand it is held
+  const spot = phi => [RP * Math.sin(phi), RP * Math.cos(phi)];
+  for (const phi of [A, B]) {
+    const [x, z] = spot(phi);
+    scene.add(at(rbox(0.5, STAND, 0.5, 0.025, stand), x, STAND / 2, z), at(rbox(0.44, 0.012, 0.44, 0.005, dark), x, STAND + 0.004, z));
+    scene.add(at(blob(1.05, 0x000000, 0.42, 0.002), x, 0.002, z));
+  }
+  const makePart = () => { const g = new THREE.Group(); g.add(rbox(PART, PART, PART, 0.005, partMat), at(cyl(0.015, 0.015, PART + 0.002, dark, 24), 0, 0, 0)); return g; };
+  const restPart = makePart(); restPart.scale.setScalar(SCALE); scene.add(restPart);
+
+  /* plinth, status ring, and the bright arc that turns toward whoever the robot is watching */
+  const ARC = 0.7, attention = new THREE.Group();
+  const real = new THREE.Group(); real.visible = false; scene.add(real);
+  real.add(at(cyl(0.34, 0.37, PED, stand), 0, PED / 2, 0), at(cyl(0.35, 0.35, 0.012, dark), 0, PED + 0.002, 0));
+  const ringG = new THREE.Group(); ringG.position.y = PED * 0.5; real.add(ringG);
+  const ring = new THREE.Mesh(new THREE.TorusGeometry(0.378, 0.016, 12, 96), led); ring.rotation.x = Math.PI / 2; ringG.add(ring);
+  const arc = new THREE.Mesh(new THREE.TorusGeometry(0.378, 0.019, 12, 24, ARC), ledHot); arc.rotation.x = Math.PI / 2; attention.add(arc); ringG.add(attention);
+  scene.add(blob(1.5, 0x000000, 0.5, 0.002));
+  const halo = blob(2.6, 0x17a56c, 0.0, 0.003); scene.add(halo);          // colour spilling onto the floor from the status ring
+
+  /* ----- the robot: seven joints and a two-finger hand, laid out as in the model's own description ----- */
+  const FILES = 'https://raw.githubusercontent.com/google-deepmind/mujoco_menagerie/fb36886b3023db08c198264e1e9956ab202c3e3b/franka_emika_panda/assets/';
+  const many = (stem, list) => list.map((m, i) => [stem + i, m]);
+  const W = 'white', O = 'off_white', K = 'black', L = 'light_blue';
+  const BASE_PARTS = [['link0_0', O], ['link0_1', K], ['link0_2', O], ['link0_3', K], ['link0_4', O], ['link0_5', K], ['link0_7', W], ['link0_8', W], ['link0_9', K], ['link0_10', O], ['link0_11', W]];
+  /* [offset from parent, rotation (w x y z) or null, [lowest, highest] angle, parts]; every joint turns about its own z axis */
+  const CHAIN = [
+    [[0, 0, 0.333], null, [-2.8973, 2.8973], [['link1', W]]],
+    [[0, 0, 0], [1, -1, 0, 0], [-1.7628, 1.7628], [['link2', W]]],
+    [[0, -0.316, 0], [1, 1, 0, 0], [-2.8973, 2.8973], many('link3_', [W, W, W, K])],
+    [[0.0825, 0, 0], [1, 1, 0, 0], [-3.0718, -0.0698], many('link4_', [W, W, K, W])],
+    [[-0.0825, 0.384, 0], [1, -1, 0, 0], [-2.8973, 2.8973], many('link5_', [K, W, W])],
+    [[0, 0, 0], [1, 1, 0, 0], [-0.0175, 3.7525], many('link6_', [O, W, K, W, W, W, W, L, L, K, K, W, 'green', W, K, K, W])],
+    [[0.088, 0, 0], [1, 1, 0, 0], [-2.8973, 2.8973], many('link7_', [W, K, K, K, K, K, K, W])]
+  ];
+  const NJ = 7, LIM = CHAIN.map(c => c[2]), HOME = [0, 0, 0, -1.5708, 0, 1.5708, -0.7853], PULL = [0, 0.05, 0.05, 0.05, 0.05, 0.05, 0];
+  const turn = new THREE.Group(); turn.rotation.y = -Math.PI / 2; turn.position.set(0, PED + 0.008, 0); real.add(turn);      // its front faces the viewer
+  const root = new THREE.Group(); root.rotation.x = -Math.PI / 2; root.scale.setScalar(SCALE); turn.add(root);                // the model is z-up
+  const joints = [], todo = BASE_PARTS.map(p => [root, p[0], p[1]]);
+  let parent = root;
+  for (const [pos, quat, , parts] of CHAIN) {
+    const body = new THREE.Group(); body.position.set(pos[0], pos[1], pos[2]);
+    if (quat) body.quaternion.set(quat[1], quat[2], quat[3], quat[0]).normalize();
+    const joint = new THREE.Group(); body.add(joint); parent.add(body); joints.push(joint);
+    for (const [file, mat] of parts) todo.push([joint, file, mat]);
+    parent = joint;
+  }
+  const hand = new THREE.Group(); hand.position.set(0, 0, 0.107); hand.quaternion.set(0, 0, -0.3826834, 0.9238795); parent.add(hand);
+  for (const p of [['hand_0', O], ['hand_1', K], ['hand_2', K], ['hand_3', W], ['hand_4', O]]) todo.push([hand, p[0], p[1]]);
+  const fingerL = new THREE.Group(); fingerL.position.set(0, 0, 0.0584); hand.add(fingerL);
+  const fingerR = new THREE.Group(); fingerR.position.set(0, 0, 0.0584); fingerR.quaternion.set(0, 0, 1, 0); hand.add(fingerR);
+  for (const f of [fingerL, fingerR]) todo.push([f, 'finger_0', O], [f, 'finger_1', K]);
+  const site = new THREE.Group(); site.position.set(0, 0, GRASP); hand.add(site);                // the point between the fingertips
+  const heldPart = makePart(); heldPart.position.set(0, 0, GRASP); hand.add(heldPart);
+  /* a wrist camera on the hand: the robot's eye, with a light ring. It looks the way the fingers point. */
+  hand.add(at(rbox(0.04, 0.062, 0.058, 0.01, dark), 0.047, 0, 0.036));
+  const lens = cyl(0.016, 0.016, 0.01, std(0x05070a, { roughness: 0.08, metalness: 0.6, envMapIntensity: 1.6 }), 32); lens.rotation.x = Math.PI / 2; hand.add(at(lens, 0.049, 0, 0.067));
+  hand.add(at(new THREE.Mesh(new THREE.TorusGeometry(0.0215, 0.0045, 12, 48), eyeRing), 0.049, 0, 0.066));
+
+  /* ----- the job, as a path for the point between its fingers: across and back ----- */
+  const LO = TOP + PART * SCALE / 2, HI = 0.98;
+  function job(u) {
+    const k = u < 0.5 ? 0 : 1, h = u * 2 - k, src = k === 0 ? A : B, dst = k === 0 ? B : A;
+    let phi, y, carry, sw = 0;
+    if (h < 0.14) { phi = src; y = lerp(HI, LO, ss(h / 0.14)); carry = false; }
+    else if (h < 0.28) { phi = src; y = lerp(LO, HI, ss((h - 0.14) / 0.14)); carry = true; }
+    else if (h < 0.62) { sw = (h - 0.28) / 0.34; phi = lerp(src, dst, ss(sw)); y = HI; carry = true; }
+    else if (h < 0.76) { phi = dst; y = lerp(HI, LO, ss((h - 0.62) / 0.14)); carry = true; }
+    else if (h < 0.90) { phi = dst; y = lerp(LO, HI, ss((h - 0.76) / 0.14)); carry = false; }
+    else { phi = dst; y = HI; carry = false; }
+    const r = RP + 0.06 * Math.sin(Math.PI * sw);
+    return { carry, rest: h < 0.14 ? src : dst, pos: new THREE.Vector3(r * Math.sin(phi), y, r * Math.cos(phi)) };
+  }
+
+  /* ----- finding joint angles that put the hand at a place, facing a direction ----- */
+  const P = new THREE.Vector3(), Q = new THREE.Quaternion(), QI = new THREE.Quaternion(), QE = new THREE.Quaternion(), ZAX = new THREE.Vector3(0, 0, 1);
+  const DOWN = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(new THREE.Vector3(0, 0, 1), new THREE.Vector3(-1, 0, 0), new THREE.Vector3(0, -1, 0)));   // fingers straight down, opening left to right, eye toward the viewer
+  const setJoints = q => { for (let i = 0; i < NJ; i++) joints[i].quaternion.setFromAxisAngle(ZAX, q[i]); };
+  function miss(q, pos, quat, e) {
+    setJoints(q); site.getWorldPosition(P); site.getWorldQuaternion(Q);
+    e[0] = pos.x - P.x; e[1] = pos.y - P.y; e[2] = pos.z - P.z;
+    QE.copy(quat).multiply(QI.copy(Q).invert()); const s = QE.w < 0 ? -0.8 : 0.8;
+    e[3] = QE.x * s; e[4] = QE.y * s; e[5] = QE.z * s; return e;
+  }
+  function solve6(M0, b) {
+    const M = M0.map((r, i) => r.concat(b[i]));
+    for (let c = 0; c < 6; c++) {
+      let p = c; for (let r = c + 1; r < 6; r++) if (Math.abs(M[r][c]) > Math.abs(M[p][c])) p = r;
+      const t = M[c]; M[c] = M[p]; M[p] = t;
+      const d = M[c][c] || 1e-12; for (let k = c; k <= 6; k++) M[c][k] /= d;
+      for (let r = 0; r < 6; r++) if (r !== c) { const f = M[r][c]; if (f) for (let k = c; k <= 6; k++) M[r][k] -= f * M[c][k]; }
+    }
+    return M.map(r => r[6]);
+  }
+  const E1 = new Array(6), E2 = new Array(6), JJ = [0, 1, 2, 3, 4, 5].map(() => new Array(NJ)), D0 = new Array(NJ), DQ = new Array(NJ);
+  function reach(q, pos, quat, tries, maxStep) {
+    let err = 1;
+    for (let it = 0; it < tries; it++) {
+      miss(q, pos, quat, E1); err = Math.hypot(E1[0], E1[1], E1[2], E1[3], E1[4], E1[5]); if (err < 1e-4) break;
+      for (let i = 0; i < NJ; i++) { q[i] += 1e-4; miss(q, pos, quat, E2); q[i] -= 1e-4; for (let r = 0; r < 6; r++) JJ[r][i] = -(E2[r] - E1[r]) / 1e-4; }
+      /* it has one joint more than it needs, so the spare freedom is spent staying close to its natural stance */
+      for (let i = 0; i < NJ; i++) D0[i] = PULL[i] * (HOME[i] - q[i]);
+      const rhs = E1.map((e, r) => { let s = e; for (let i = 0; i < NJ; i++) s -= JJ[r][i] * D0[i]; return s; });
+      const M = JJ.map((ra, r) => JJ.map((rb, c) => { let s = r === c ? 4e-4 : 0; for (let k = 0; k < NJ; k++) s += ra[k] * rb[k]; return s; }));
+      const yv = solve6(M, rhs); let m = 0;
+      for (let i = 0; i < NJ; i++) { let s = D0[i]; for (let r = 0; r < 6; r++) s += JJ[r][i] * yv[r]; DQ[i] = s; m = Math.max(m, Math.abs(s)); }
+      const k = m > maxStep ? maxStep / m : 1;
+      for (let i = 0; i < NJ; i++) q[i] = clamp(q[i] + DQ[i] * k, LIM[i][0], LIM[i][1]);
+    }
+    return err;
+  }
+  /* the whole job is worked out once and then played back */
+  const N = 360, table = [];
+  function planJob() {
+    const q = HOME.slice();
+    if (reach(q, job(0).pos, DOWN, 200, 0.15) > 2e-3) return false;
+    let worst = 0;
+    for (let lap = 0; lap < 2; lap++) {                    // go round twice, so the stance it settles into is the same at the start and the end
+      table.length = 0; worst = 0;
+      for (let i = 0; i < N; i++) { worst = Math.max(worst, reach(q, job(i / N).pos, DOWN, 60, 0.15)); table.push(q.slice()); }
+    }
+    return worst < 3e-3;
+  }
+  const zeros = () => new Array(NJ).fill(0), qWork = zeros(), qLook = zeros(), qGaze = zeros(), qNow = zeros();
+  let looking = false;
+  function workAngles(u) {
+    const f = u * N, i0 = Math.floor(f) % N, i1 = (i0 + 1) % N, w = f - Math.floor(f), a = table[i0], b = table[i1];
+    for (let i = 0; i < NJ; i++) qWork[i] = Math.abs(b[i] - a[i]) > 1 ? a[i] : a[i] + (b[i] - a[i]) * w;
+  }
+  /* turning to look: the hand lifts, and its camera points at the person and follows them */
+  const HEAD = new THREE.Vector3(), DIR = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0), XA = new THREE.Vector3(), YA = new THREE.Vector3(), LOOKQ = new THREE.Quaternion(), BASIS = new THREE.Matrix4(), GAZE = new THREE.Vector3();
+  /* ----- personality moves: each one nudges where the hand is held and how it is turned, over time ----- */
+  const OFF = { dx: 0, dy: 0, dz: 0, pitch: 0, yaw: 0, roll: 0 }, EX = { q7: 0, fingers: null, pulse: 0, blink: 0 };
+  const hump = (t, rise, hold, fall) => t < 0 ? 0 : t < rise ? ss(t / rise) : t < rise + hold ? 1 : t < rise + hold + fall ? 1 - ss((t - rise - hold) / fall) : 0;
+  const dip = (t, start, len) => t > start && t < start + len ? Math.pow(Math.sin(Math.PI * (t - start) / len), 2) : 0;
+  function move(name, t, sway) {
+    OFF.dx = OFF.dy = OFF.dz = OFF.pitch = OFF.yaw = OFF.roll = 0; EX.q7 = 0; EX.fingers = null; EX.pulse = 0; EX.blink = 0;
+    if (name === 'notice') { OFF.dy = 0.05 * hump(t, 0.18, 0.4, 0.3); EX.blink = t < 0.6 && t % 0.3 > 0.15 ? 1 : 0; }                    // head up, two blinks
+    else if (name === 'nod') { const n = dip(t, 0, 0.45) + dip(t, 0.45, 0.45); OFF.pitch = 0.34 * n; OFF.dy = -0.05 * n; }                // two small dips
+    else if (name === 'tilt') { const e = hump(t, 0.5, 1.5, 0.6); OFF.roll = 0.4 * e; OFF.dz = 0.15 * e; OFF.dy = -0.03 * e; }            // head to one side, leaning in
+    else if (name === 'duck') {                                                                                                          // pull back and down, then peek back up
+      const e = t < 0.2 ? ss(t / 0.2) : t < 1.0 ? 1 : t < 2.4 ? 1 - 0.8 * ss((t - 1.0) / 1.4) : 0.2 * (1 - ss(Math.min(1, (t - 2.4) / 0.5)));
+      OFF.dz = -0.45 * e; OFF.dy = -0.44 * e; OFF.pitch = 0.5 * e - 0.3 * dip(t, 1.0, 1.6); EX.fingers = 0;
+    }
+    else if (name === 'wave') { const e = Math.sin(Math.min(1, t / 1.7) * Math.PI); EX.q7 = 0.55 * e * Math.sin(t * 13); EX.fingers = 0.5 + 0.5 * Math.sin(t * 18); }
+    else if (name === 'excited') { const e = hump(t, 0.1, 1.2, 0.35); OFF.dy = 0.1 * e * Math.abs(Math.sin(t * 10)); OFF.roll = 0.13 * e * Math.sin(t * 20); EX.fingers = 0.5 + 0.5 * Math.sin(t * 34); EX.pulse = e; }
+    else if (name === 'search') { const e = hump(t, 0.15, 0.9, 0.2); OFF.yaw = 0.7 * e * Math.sin(t * 2 * Math.PI / 1.1); OFF.dy = 0.05 * e; }   // look one way, then the other
+    else if (name === 'goodbye') { const n = dip(t, 0.5, 0.45); OFF.pitch = 0.3 * n; OFF.dy = -0.04 * n; OFF.yaw = 0.16 * Math.sin((t - 1.05) * 2 * Math.PI * 5) * dip(t, 1.05, 0.45) ** 0.5; }
+    else if (name === 'bored') {                                                                                                         // stretch, glance out, tap its fingers
+      const s1 = hump(t, 0.5, 0.5, 0.4); OFF.dy = 0.22 * s1; OFF.dz = -0.12 * s1; OFF.pitch = -0.35 * s1;
+      OFF.yaw = 0.75 * Math.sin((t - 1.4) * 2 * Math.PI / 1.8) * dip(t, 1.4, 1.8) ** 0.5;
+      if (t > 3.2) { const e = hump(t - 3.2, 0.3, 0.6, 0.35); OFF.pitch = 0.6 * e; OFF.dy = -0.2 * e; EX.fingers = 0.5 + 0.5 * Math.cos((t - 3.2) * 2 * Math.PI * 3); }
+    }
+    else if (name === 'flourish') { const e = Math.sin(Math.min(1, t / 0.7) * Math.PI); EX.q7 = 1.1 * e * Math.sin(t * 2 * Math.PI / 0.7); EX.fingers = 0.5 + 0.5 * Math.sin(t * 26); }
+    OFF.roll += 0.3 * sway;                                                                                                              // sway along with someone rocking side to side
+  }
+  /* turning to look: the hand lifts, and its camera points at the person and follows them */
+  const QYAW = new THREE.Quaternion(), QLOC = new THREE.Quaternion(), LY = new THREE.Vector3(0, 1, 0), LZ = new THREE.Vector3(0, 0, 1);
+  function lookAngles(gaze) {
+    if (!looking) { for (let i = 0; i < NJ; i++) qLook[i] = qGaze[i] = qNow[i]; looking = true; }
+    HEAD.set(clamp(gaze.x * 0.26, -0.36, 0.36) + OFF.dx, PED + 1.18 + OFF.dy, 0.62 + OFF.dz);
+    DIR.copy(gaze).sub(HEAD).normalize();
+    XA.copy(UP).addScaledVector(DIR, -UP.dot(DIR)).normalize();               // the eye sits on the side of the hand that should end up on top
+    YA.crossVectors(DIR, XA);
+    LOOKQ.setFromRotationMatrix(BASIS.makeBasis(XA, YA, DIR));
+    if (OFF.yaw) LOOKQ.premultiply(QYAW.setFromAxisAngle(UP, OFF.yaw));        // turn the head left or right
+    if (OFF.pitch) LOOKQ.multiply(QLOC.setFromAxisAngle(LY, -OFF.pitch));      // dip it (positive looks down)
+    if (OFF.roll) LOOKQ.multiply(QLOC.setFromAxisAngle(LZ, OFF.roll));         // tilt it to one side
+    reach(qLook, HEAD, LOOKQ, 10, 0.12);
+    for (let i = 0; i < NJ; i++) qGaze[i] += (qLook[i] - qGaze[i]) * 0.2;       // the gaze glides, it does not twitch
+  }
+
+  let ready = false;
+  (async () => {
+    try {
+      const loader = new OBJLoader(), cache = {};
+      const names = [...new Set(todo.map(t => t[1]))];
+      await Promise.all(names.map(async n => { cache[n] = await loader.loadAsync(FILES + n + '.obj'); }));
+      for (const [holder, file, mat] of todo) {
+        const obj = cache[file].clone();
+        obj.traverse(m => { if (m.isMesh) { if (!m.geometry.attributes.normal) m.geometry.computeVertexNormals(); m.material = MAT[mat]; shade(m); } });
+        holder.add(obj);
+      }
+      if (!planJob()) throw new Error('the arm could not reach every point of its job');
+      workAngles(0); for (let i = 0; i < NJ; i++) qNow[i] = qWork[i];
+      real.visible = true; ready = true; window.__cell3d.robot = 'Franka Panda model';
+    } catch (e) { console.warn('The robot model could not be loaded.', e); window.__cell3d.robot = 'not loaded'; }
+  })();
+
+  const COLORS = { run: 0x17a56c, slow: 0xf4b400, stop: 0xe2382b, hold: 0xe2382b };
+  const white = new THREE.Color(0xffffff), ringTo = new THREE.Color();
+  let haloNow = 0;
+  function signals(state, attn) {
+    const c = COLORS[state] || COLORS.run;
+    led.emissive.setHex(c); ledHot.emissive.setHex(c).lerp(white, 0.6); halo.material.color.setHex(c); eyeRing.emissive.lerp(ringTo.setHex(c), 0.15);
+    haloNow += ((state === 'run' ? 0.0 : state === 'slow' ? 0.3 : 0.45) - haloNow) * 0.12; halo.material.opacity = haloNow;
+    attention.rotation.y = ARC / 2 - Math.PI / 2 + Math.atan2(attn * 1.4, 1.1);
+  }
+
+  const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 60);
+  camera.position.set(0, 1.45, 4.7); camera.lookAt(0, 0.8, 0);
+  let lw = 0, lh = 0, lf = 0, lcy = 0;
+  window.__cell3d = {
+    robot: 'loading',
+    /* v: { w, h, F, cy, u, state, attn: -1..1, look: 0..1, gaze: [x, y, z], wave: seconds since a wave began or -1 } */
+    render(v) {
+      if (v.w !== lw || v.h !== lh || v.F !== lf || v.cy !== lcy) {
+        lw = v.w; lh = v.h; lf = v.F; lcy = v.cy;
+        renderer.setSize(v.w, v.h, false);
+        camera.aspect = v.w / v.h; camera.fov = 2 * Math.atan((v.h / 2) / v.F) * 180 / Math.PI;
+        const shift = Math.round(v.h / 2 - v.cy);
+        if (shift) camera.setViewOffset(v.w, v.h, 0, shift, v.w, v.h); else camera.clearViewOffset();
+        camera.updateProjectionMatrix();
+      }
+      if (ready) {
+        const t = job(v.u); workAngles(v.u);
+        move(v.act, v.actT || 0, v.sway || 0);
+        if (v.look > 0.002) lookAngles(GAZE.set(v.gaze[0], v.gaze[1], v.gaze[2])); else looking = false;
+        const s = ss(clamp(v.look, 0, 1));
+        for (let i = 0; i < NJ; i++) qNow[i] = qWork[i] + (looking ? (qGaze[i] - qWork[i]) * s : 0);
+        let open = t.carry ? 0 : 1;
+        if (EX.q7) qNow[6] = clamp(qNow[6] + EX.q7, LIM[6][0], LIM[6][1]);
+        if (EX.fingers !== null && !t.carry) open = EX.fingers;      // it never lets go of a part to gesture
+        eyeRing.emissiveIntensity = EX.blink ? 0.15 : 3 + 4 * EX.pulse * Math.abs(Math.sin((v.actT || 0) * 14));
+        led.emissiveIntensity = 2.2 + 2.5 * EX.pulse * Math.abs(Math.sin((v.actT || 0) * 14));
+        setJoints(qNow);
+        const gap = PART / 2 + 0.0005 + open * 0.0095; fingerL.position.y = gap; fingerR.position.y = -gap;
+        heldPart.visible = t.carry; restPart.visible = !t.carry;
+        const [bx, bz] = spot(t.rest); restPart.position.set(bx, TOP + PART * SCALE / 2, bz);
+      } else restPart.visible = false;
+      signals(v.state, v.attn);
+      renderer.render(scene, camera);
+    }
+  };
+} catch (e) {
+  console.warn('The 3D view could not start.', e);
+}
+</script>
+</body>
+</html>
