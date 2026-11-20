@@ -1,7 +1,8 @@
 # SafeWorld window display
 
-An interactive poster for a storefront window. A robot arm works on screen, slows down as someone
-walks up, stops when they are close, and reacts to them: it looks at you, nods, waves back and more.
+An interactive poster for a storefront window. A robot arm moves a heap of parts from one tray to
+another, slows down as someone walks up, stops when they are close, and reacts to them: it looks at
+you, nods, waves back and more. The parts are simulated, so they tumble and pile up on their own.
 
 Open it: https://miraj212.github.io/safeworld-window-display/
 
@@ -19,4 +20,5 @@ Open it: https://miraj212.github.io/safeworld-window-display/
 - Robot model: Franka Emika Panda from
   [MuJoCo Menagerie](https://github.com/google-deepmind/mujoco_menagerie), Apache-2.0.
 - 3D drawing: [three.js](https://threejs.org), MIT.
+- Physics for the parts: [cannon-es](https://github.com/pmndrs/cannon-es), MIT.
 - Person and pose detection: [MediaPipe](https://developers.google.com/mediapipe), Apache-2.0.

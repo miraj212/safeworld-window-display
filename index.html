@@ -311,7 +311,7 @@ function groundLine(x0, z0, x1, z1, color, lw) {
 }
 
 /* ---------- robot ---------- */
-const R = { hs: 0.5, L1: 0.78, L2: 0.72, cycle: 6.4 };   // seconds for the part to go across and come back
+const R = { hs: 0.5, L1: 0.78, L2: 0.72, cycle: 9.2 };   // seconds for the arm to move two parts from one tray to the other
 /* whether the robot has turned to look at the person in front of it, and when they last waved */
 const view = { look: 0, lookUntil: 0, waveAt: -1e9 };
 const robot = { u: 0.3, speed: 1, look: 0, work: 1, pauseUntil: 0 };
@@ -772,8 +772,8 @@ function direct(now, dt, nearest) {
   /* bored after a while with nobody about */
   if (people.length) mem.alone = now; else if (now - mem.alone > 45000) { play('bored', now); mem.alone = now + 20000; }
   /* now and then, a flourish after setting the part down */
-  const half = (robot.u * 2) % 1;
-  if (mem.half < 0.88 && half >= 0.88 && state === 'run' && !people.length && Math.random() < 0.3) play('flourish', now);
+  const c3 = window.__cell3d, half = c3 && c3.h != null ? c3.h : (robot.u * 2) % 1;       // how far it is through moving one part
+  if (mem.half < 0.78 && half >= 0.78 && state === 'run' && !people.length && Math.random() < 0.3) play('flourish', now);
   mem.half = half; mem.zone = zone; mem.count = people.length; mem.state = state;
 }
 
@@ -808,7 +808,8 @@ function frame(now) {
   if (target === 1 && robot.speed > 0.985) robot.speed = 1;
   robot.work += ((now < robot.pauseUntil ? 0 : 1) - robot.work) * (1 - Math.exp(-dt * 8));   // a personality move can make it put its work down for a moment
   robot.u = (robot.u + dt * robot.speed * robot.work / R.cycle) % 1;
-  const lookTo = nearest ? clamp(nearest.x / 1.6, -1, 1) : Math.sin(armTarget(robot.u).phi) * 0.5;   // watch the nearest person, else its own work
+  const workPhi = window.__cell3d && window.__cell3d.phi != null ? window.__cell3d.phi : armTarget(robot.u).phi;
+  const lookTo = nearest ? clamp(nearest.x / 1.6, -1, 1) : Math.sin(workPhi) * 0.5;   // watch the nearest person, else its own work
   robot.look += (lookTo - robot.look) * (1 - Math.exp(-dt * 7));
   state = hold ? 'hold' : (wantStop || robot.speed === 0) ? 'stop' : robot.speed < 0.985 ? 'slow' : 'run';
 
@@ -907,13 +908,18 @@ requestAnimationFrame(frame);
 <script type="importmap">
 { "imports": {
   "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
-  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/",
+  "cannon-es": "https://cdn.jsdelivr.net/npm/cannon-es@0.20.0/dist/cannon-es.js"
 } }
 </script>
 <script type="module">
 /* The robot, rendered in 3D like a studio product shot and laid over the flat poster behind it.
-   The canvas is transparent: only the robot, its two stands, the part it carries and their shadows
+   The canvas is transparent: only the robot, its two stands, the parts it moves and their shadows
    are drawn. The main script above decides what the robot does; this draws it.
+
+   The parts are real rigid bodies (cannon-es, MIT): fourteen of them sit heaped in a tray, the robot
+   takes them one at a time and lets them go over the other tray, and they fall, knock into each
+   other and settle on their own. When a tray is empty it works back the other way.
 
    Robot model: Franka Emika Panda, from MuJoCo Menagerie (github.com/google-deepmind/mujoco_menagerie,
    franka_emika_panda), Apache-2.0, loaded from that project when the page opens. */
@@ -921,6 +927,7 @@ import * as THREE from 'three';
 import { RoomEnvironment } from 'three/addons/environments/RoomEnvironment.js';
 import { RoundedBoxGeometry } from 'three/addons/geometries/RoundedBoxGeometry.js';
 import { OBJLoader } from 'three/addons/loaders/OBJLoader.js';
+import * as CANNON from 'cannon-es';
 
 try {
   const canvas = document.getElementById('gl');
@@ -951,6 +958,8 @@ try {
   const dark = std(0x1b1f23, { roughness: 0.4, metalness: 0.55 });
   const stand = std(0x0f1113, { roughness: 0.5, metalness: 0.15, envMapIntensity: 0.35 });
   const partMat = std(0x7e868d, { roughness: 0.32, metalness: 0.95, envMapIntensity: 1 });
+  const glass = new THREE.MeshPhysicalMaterial({ color: 0xe6eff3, roughness: 0.06, metalness: 0, transparent: true, opacity: 0.16, envMapIntensity: 1.2, depthWrite: false });
+  const lip = std(0x3a4046, { roughness: 0.35, metalness: 0.6, envMapIntensity: 0.9 });
   const led = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, emissive: 0x17a56c, emissiveIntensity: 2.2, roughness: 0.4 });
   const ledHot = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, emissive: 0xffffff, emissiveIntensity: 3, roughness: 0.4 });
   const eyeRing = new THREE.MeshStandardMaterial({ color: 0x0a0a0a, emissive: 0x17a56c, emissiveIntensity: 3, roughness: 0.4 });
@@ -983,18 +992,24 @@ try {
     m.rotation.x = -Math.PI / 2; m.position.y = y; return m;
   };
 
-  /* ----- sizes. The robot is shown 1.6 times life size on a low plinth; its hand and the part scale with it. ----- */
+  /* ----- sizes. The robot is shown 1.6 times life size on a low plinth; its hand and the parts scale with it. ----- */
   const SCALE = 1.6, PED = 0.16;
   const STAND = 0.30, TOP = STAND + 0.012, RP = 0.8, A = -1.25, B = 1.25;
-  const PART = 0.06, GRASP = 0.103;                    // in the robot's own units: size of the part, and how far out from the hand it is held
+  const PART = 0.06, GRASP = 0.103;                    // in the robot's own units: size of a part, and how far out from the hand it is held
+  const NPARTS = 14, PS = PART * SCALE, HALF = PS / 2; // how many parts there are, and their size as shown
+  const TRAY = 0.34, WALL = 0.09, GLASS = 0.006;       // each stand carries a small tray with low clear walls: small enough that the parts have to heap up
   const spot = phi => [RP * Math.sin(phi), RP * Math.cos(phi)];
-  for (const phi of [A, B]) {
-    const [x, z] = spot(phi);
-    scene.add(at(rbox(0.5, STAND, 0.5, 0.025, stand), x, STAND / 2, z), at(rbox(0.44, 0.012, 0.44, 0.005, dark), x, STAND + 0.004, z));
+  const trays = [A, B].map(phi => { const [x, z] = spot(phi); return { x, z }; });
+  for (const { x, z } of trays) {
+    scene.add(at(rbox(0.5, STAND, 0.5, 0.025, stand), x, STAND / 2, z), at(rbox(TRAY + 0.03, 0.012, TRAY + 0.03, 0.005, dark), x, STAND + 0.004, z));
     scene.add(at(blob(1.05, 0x000000, 0.42, 0.002), x, 0.002, z));
+    const o = TRAY / 2 + GLASS / 2, full = TRAY + 2 * GLASS;
+    for (const [w, d, px, pz] of [[full, GLASS, 0, o], [full, GLASS, 0, -o], [GLASS, TRAY, o, 0], [GLASS, TRAY, -o, 0]]) {
+      scene.add(at(new THREE.Mesh(new THREE.BoxGeometry(w, WALL, d), glass), x + px, TOP + WALL / 2 - 0.002, z + pz));
+      scene.add(at(new THREE.Mesh(new THREE.BoxGeometry(w + (d > w ? 0.003 : 0), 0.005, d + (w > d ? 0.003 : 0)), lip), x + px, TOP + WALL, z + pz));   // a thin rim, so the clear walls read as a tray
+    }
   }
   const makePart = () => { const g = new THREE.Group(); g.add(rbox(PART, PART, PART, 0.005, partMat), at(cyl(0.015, 0.015, PART + 0.002, dark, 24), 0, 0, 0)); return g; };
-  const restPart = makePart(); restPart.scale.setScalar(SCALE); scene.add(restPart);
 
   /* plinth, status ring, and the bright arc that turns toward whoever the robot is watching */
   const ARC = 0.7, attention = new THREE.Group();
@@ -1039,26 +1054,11 @@ try {
   const fingerR = new THREE.Group(); fingerR.position.set(0, 0, 0.0584); fingerR.quaternion.set(0, 0, 1, 0); hand.add(fingerR);
   for (const f of [fingerL, fingerR]) todo.push([f, 'finger_0', O], [f, 'finger_1', K]);
   const site = new THREE.Group(); site.position.set(0, 0, GRASP); hand.add(site);                // the point between the fingertips
-  const heldPart = makePart(); heldPart.position.set(0, 0, GRASP); hand.add(heldPart);
   /* a wrist camera on the hand: the robot's eye, with a light ring. It looks the way the fingers point. */
   hand.add(at(rbox(0.04, 0.062, 0.058, 0.01, dark), 0.047, 0, 0.036));
   const lens = cyl(0.016, 0.016, 0.01, std(0x05070a, { roughness: 0.08, metalness: 0.6, envMapIntensity: 1.6 }), 32); lens.rotation.x = Math.PI / 2; hand.add(at(lens, 0.049, 0, 0.067));
   hand.add(at(new THREE.Mesh(new THREE.TorusGeometry(0.0215, 0.0045, 12, 48), eyeRing), 0.049, 0, 0.066));
 
-  /* ----- the job, as a path for the point between its fingers: across and back ----- */
-  const LO = TOP + PART * SCALE / 2, HI = 0.98;
-  function job(u) {
-    const k = u < 0.5 ? 0 : 1, h = u * 2 - k, src = k === 0 ? A : B, dst = k === 0 ? B : A;
-    let phi, y, carry, sw = 0;
-    if (h < 0.14) { phi = src; y = lerp(HI, LO, ss(h / 0.14)); carry = false; }
-    else if (h < 0.28) { phi = src; y = lerp(LO, HI, ss((h - 0.14) / 0.14)); carry = true; }
-    else if (h < 0.62) { sw = (h - 0.28) / 0.34; phi = lerp(src, dst, ss(sw)); y = HI; carry = true; }
-    else if (h < 0.76) { phi = dst; y = lerp(HI, LO, ss((h - 0.62) / 0.14)); carry = true; }
-    else if (h < 0.90) { phi = dst; y = lerp(LO, HI, ss((h - 0.76) / 0.14)); carry = false; }
-    else { phi = dst; y = HI; carry = false; }
-    const r = RP + 0.06 * Math.sin(Math.PI * sw);
-    return { carry, rest: h < 0.14 ? src : dst, pos: new THREE.Vector3(r * Math.sin(phi), y, r * Math.cos(phi)) };
-  }
 
   /* ----- finding joint angles that put the hand at a place, facing a direction ----- */
   const P = new THREE.Vector3(), Q = new THREE.Quaternion(), QI = new THREE.Quaternion(), QE = new THREE.Quaternion(), ZAX = new THREE.Vector3(0, 0, 1);
@@ -1097,23 +1097,176 @@ try {
     }
     return err;
   }
-  /* the whole job is worked out once and then played back */
-  const N = 360, table = [];
-  function planJob() {
-    const q = HOME.slice();
-    if (reach(q, job(0).pos, DOWN, 200, 0.15) > 2e-3) return false;
-    let worst = 0;
-    for (let lap = 0; lap < 2; lap++) {                    // go round twice, so the stance it settles into is the same at the start and the end
-      table.length = 0; worst = 0;
-      for (let i = 0; i < N; i++) { worst = Math.max(worst, reach(q, job(i / N).pos, DOWN, 60, 0.15)); table.push(q.slice()); }
-    }
-    return worst < 3e-3;
-  }
   const zeros = () => new Array(NJ).fill(0), qWork = zeros(), qLook = zeros(), qGaze = zeros(), qNow = zeros();
   let looking = false;
-  function workAngles(u) {
-    const f = u * N, i0 = Math.floor(f) % N, i1 = (i0 + 1) % N, w = f - Math.floor(f), a = table[i0], b = table[i1];
-    for (let i = 0; i < NJ; i++) qWork[i] = Math.abs(b[i] - a[i]) > 1 ? a[i] : a[i] + (b[i] - a[i]) * w;
+
+  /* ----- the parts are real rigid bodies: they fall, knock into each other and settle on their own ----- */
+  const PHY = 10;                                             // the physics runs at ten times the size shown, where it is steadiest
+  const world = new CANNON.World({ gravity: new CANNON.Vec3(0, -9.81 * SCALE * PHY, 0) });
+  world.allowSleep = true; world.solver.iterations = 20;
+  world.defaultContactMaterial.friction = 0.5; world.defaultContactMaterial.restitution = 0.08;
+  const solid = (hx, hy, hz, x, y, z) => {
+    const b = new CANNON.Body({ mass: 0, shape: new CANNON.Box(new CANNON.Vec3(hx * PHY, hy * PHY, hz * PHY)) });
+    b.position.set(x * PHY, y * PHY, z * PHY); world.addBody(b);
+  };
+  for (const { x, z } of trays) {
+    solid(0.45, 0.5, 0.45, x, TOP - 0.5, z);                  // the tray floor
+    const o = TRAY / 2 + 0.1;                                 // the walls carry on, unseen, far above the clear lip, so no part can ever leave its tray
+    solid(0.1, 1.2, 0.45, x - o, TOP + 1.2, z); solid(0.1, 1.2, 0.45, x + o, TOP + 1.2, z);
+    solid(0.45, 1.2, 0.1, x, TOP + 1.2, z - o); solid(0.45, 1.2, 0.1, x, TOP + 1.2, z + o);
+  }
+  const cube = new CANNON.Box(new CANNON.Vec3(HALF * PHY, HALF * PHY, HALF * PHY));
+  const partsG = new THREE.Group(); partsG.visible = false; scene.add(partsG);
+  const parts = [], rnd = a => (Math.random() * 2 - 1) * a;
+  for (let i = 0; i < NPARTS; i++) {
+    const mesh = makePart(); mesh.scale.setScalar(SCALE); partsG.add(mesh);
+    const body = new CANNON.Body({ mass: 1, shape: cube, linearDamping: 0.05, angularDamping: 0.15 });
+    body.allowSleep = true; body.sleepSpeedLimit = 0.5; body.sleepTimeLimit = 0.4;
+    world.addBody(body); parts.push({ mesh, body, tray: 0, held: false, lost: 0 });
+  }
+  const still = b => { b.previousPosition.copy(b.position); b.interpolatedPosition.copy(b.position); b.previousQuaternion.copy(b.quaternion); b.interpolatedQuaternion.copy(b.quaternion); };
+  function place(p, tray, y) {                                // set a part loose above a tray
+    const b = p.body, t = trays[tray];
+    b.position.set((t.x + rnd(0.07)) * PHY, y * PHY, (t.z + rnd(0.07)) * PHY); b.quaternion.setFromEuler(rnd(Math.PI), rnd(Math.PI), rnd(Math.PI));
+    b.velocity.set(0, 0, 0); b.angularVelocity.set(0, 0, 0); still(b); b.wakeUp(); p.tray = tray; p.lost = 0;
+  }
+
+  /* ----- the job: take the top part off one heap and let it go over the other tray; when a tray is empty, work back the other way ----- */
+  const HI = 0.98, LO = TOP + HALF, YAWMAX = 0.8;
+  /* one part's trip, as shares of the whole: down, close, up, across, lower, open, rise, then back for the next one */
+  const T = { down: 0.13, grip: 0.17, up: 0.29, swing: 0.55, lower: 0.65, open: 0.69, rise: 0.76 };
+  const TAKE = (T.down + T.grip) / 2, LET = (T.lower + T.open) / 2;
+  const job = { h: 0.8, stage: 2, src: 0, dst: 1, nextSrc: 0, pick: null, next: null, holding: null, wait: 0, lastU: null, grip: 0, yaw: 0, pickYaw: 0, dropYaw: 0, nextYaw: 0, moved: 0 };
+  const PK = new THREE.Vector3(), DP = new THREE.Vector3(), NX = new THREE.Vector3(), TP = new THREE.Vector3(), SP = new THREE.Vector3(), SPREV = new THREE.Vector3(), VEL = new THREE.Vector3(), RELP = new THREE.Vector3(), PV = new THREE.Vector3();
+  const SQ = new THREE.Quaternion(), SQI = new THREE.Quaternion(), RELQ = new THREE.Quaternion(), SNAPQ = new THREE.Quaternion(), WQ = new THREE.Quaternion(), M4 = new THREE.Matrix4();
+
+  /* the top of a heap is the part to take; it keeps to the one it has chosen unless another is clearly higher */
+  function choosePick(tray, keep) {
+    let best = keep && keep.tray === tray && !keep.held ? keep : null, by = best ? best.mesh.position.y + 0.02 : -1;
+    for (const p of parts) if (p.tray === tray && !p.held && p !== best && p.mesh.position.y > by) { best = p; by = p.mesh.position.y; }
+    return best;
+  }
+  /* a cube can be held four ways round: turn the wrist the least that lines the fingers up with two of its faces */
+  function yawFor(p, prev) {
+    const e = M4.makeRotationFromQuaternion(p.mesh.quaternion).elements;
+    let c = 0; if (Math.abs(e[5]) > Math.abs(e[1])) c = 1; if (Math.abs(e[9]) > Math.abs(e[c * 4 + 1])) c = 2;     // which of its axes points most nearly up
+    const a = (c + 1) % 3;                                                                                        // one of the other two lies flat
+    let yaw = -Math.atan2(e[a * 4 + 2], e[a * 4]);
+    yaw -= Math.round((yaw - prev) / (Math.PI / 2)) * (Math.PI / 2);                                              // stay with the grip it was already lining up for
+    while (yaw > YAWMAX + 0.05) yaw -= Math.PI / 2;
+    while (yaw < -YAWMAX - 0.05) yaw += Math.PI / 2;
+    return clamp(yaw, -YAWMAX, YAWMAX);
+  }
+  /* the nearest way of holding a cube squarely: as the fingers close, the part turns to sit flat between them */
+  function squareUp(q, out) {
+    const e = M4.makeRotationFromQuaternion(q).elements, m = [[e[0], e[4], e[8]], [e[1], e[5], e[9]], [e[2], e[6], e[10]]];
+    const R = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], rows = [0, 1, 2], cols = [0, 1, 2];
+    for (let n = 0; n < 2; n++) {
+      let best = -1, br = 0, bc = 0;
+      for (const r of rows) for (const c of cols) if (Math.abs(m[r][c]) > best) { best = Math.abs(m[r][c]); br = r; bc = c; }
+      R[br][bc] = m[br][bc] < 0 ? -1 : 1; rows.splice(rows.indexOf(br), 1); cols.splice(cols.indexOf(bc), 1);
+    }
+    const r = rows[0], c = cols[0]; R[r][c] = 1;
+    const det = R[0][0] * (R[1][1] * R[2][2] - R[1][2] * R[2][1]) - R[0][1] * (R[1][0] * R[2][2] - R[1][2] * R[2][0]) + R[0][2] * (R[1][0] * R[2][1] - R[1][1] * R[2][0]);
+    if (det < 0) R[r][c] = -1;
+    M4.set(R[0][0], R[0][1], R[0][2], 0, R[1][0], R[1][1], R[1][2], 0, R[2][0], R[2][1], R[2][2], 0, 0, 0, 0, 1);
+    return out.setFromRotationMatrix(M4);
+  }
+  /* how high to let a part go over a spot: just clear of whatever is already lying there */
+  function dropHeight(tray, x, z) {
+    let top = TOP;
+    for (const p of parts) if (p.tray === tray && !p.held && Math.hypot(p.mesh.position.x - x, p.mesh.position.z - z) < PS * 1.15) top = Math.max(top, p.mesh.position.y + HALF * 1.3);
+    return Math.min(top + HALF + 0.07, TOP + 0.5);
+  }
+  /* onto the middle of the heap, until that is tall enough that it is better to start beside it */
+  function chooseDrop(tray) {
+    const t = trays[tray]; let by = 1e9;
+    for (let i = 0; i < 7; i++) {
+      const a = Math.random() * 2 * Math.PI, r = (i < 3 ? 0.045 : 0.1) * Math.sqrt(Math.random()), x = t.x + r * Math.cos(a), z = t.z + r * Math.sin(a), y = dropHeight(tray, x, z);
+      if (i < 3 && y < TOP + 0.36) { DP.set(x, y, z); return; }
+      if (y < by) { by = y; DP.set(x, y, z); }
+    }
+  }
+  function take() {
+    const p = job.pick; p.held = true; world.removeBody(p.body); job.holding = p;
+    for (const o of parts) if (!o.held && o.tray === p.tray) o.body.wakeUp();          // whatever was resting on it is free to fall
+    SQI.copy(SQ).invert(); RELQ.copy(SQI).multiply(p.mesh.quaternion); RELP.copy(p.mesh.position).sub(SP).applyQuaternion(SQI);
+    squareUp(RELQ, SNAPQ); chooseDrop(job.dst); job.dropYaw = rnd(0.45);
+  }
+  function letGo(dt) {
+    const p = job.holding, b = p.body, m = p.mesh;
+    b.position.set(m.position.x * PHY, m.position.y * PHY, m.position.z * PHY); b.quaternion.set(m.quaternion.x, m.quaternion.y, m.quaternion.z, m.quaternion.w); still(b);
+    VEL.copy(SP).sub(SPREV).divideScalar(Math.max(dt, 1e-3)).clampLength(0, 0.5);    // it leaves with whatever little speed the hand had
+    b.velocity.set(VEL.x * PHY, VEL.y * PHY, VEL.z * PHY); b.angularVelocity.set(rnd(2), rnd(2), rnd(2));
+    world.addBody(b); b.wakeUp(); p.held = false; p.tray = job.dst; p.lost = 0; job.holding = null; job.moved++;
+    job.nextSrc = parts.some(o => o.tray === job.src) ? job.src : job.dst;             // tray empty: start bringing them back
+    job.next = choosePick(job.nextSrc, null); job.nextYaw = job.next ? yawFor(job.next, 0) : 0;
+  }
+  function begin() {
+    job.stage = 0; job.wait = 0; job.src = job.nextSrc; job.dst = 1 - job.src;
+    job.pick = choosePick(job.src, job.next); job.next = null; job.pickYaw = job.nextYaw;
+    if (!job.pick) { job.src = job.dst; job.dst = 1 - job.src; job.nextSrc = job.src; job.pick = choosePick(job.src, null); }
+  }
+  /* moves the job on. It only closes on a part, or lets one go, once the hand is really there: if the robot
+     has turned away to look at someone, the job waits for it. */
+  function advance(u, look, dt) {
+    let du = job.lastU === null ? 0 : (u - job.lastU + 1) % 1; if (du > 0.5) du = 0; job.lastU = u;
+    let h = job.h + du * 2; const free = look < 0.03;
+    if (job.stage === 0 && h >= TAKE) {
+      if (job.pick && (SP.distanceTo(PK) < 0.03 || job.wait > 2.5)) { take(); job.stage = 1; job.wait = 0; }
+      else { h = TAKE; if (free) job.wait += dt; }
+    }
+    if (job.stage === 1 && h >= LET) {
+      if (SP.distanceTo(DP) < 0.04 || job.wait > 2.5) { letGo(dt); job.stage = 2; job.wait = 0; }
+      else { h = LET; if (free) job.wait += dt; }
+    }
+    if (h >= 1) { h = Math.min(h - 1, T.down); begin(); }
+    job.h = h;
+  }
+  const span = (h, a, b) => ss(clamp((h - a) / (b - a), 0, 1));
+  function sweep(a, b, t) {                                     // from above one place to above another, swinging round the robot's own axis
+    const s = ss(clamp(t, 0, 1)), fa = Math.atan2(a.x, a.z), fb = Math.atan2(b.x, b.z);
+    const f = lerp(fa, fb, s), r = lerp(Math.hypot(a.x, a.z), Math.hypot(b.x, b.z), s) + 0.06 * Math.sin(Math.PI * s) * Math.min(1, Math.abs(fb - fa) / 2);
+    TP.set(r * Math.sin(f), HI, r * Math.cos(f)); return s;
+  }
+  /* where the point between the fingers should be right now, how the wrist is turned, and how far the fingers have closed */
+  function aim() {
+    const h = job.h;
+    if (job.stage === 0 && job.pick) { PK.copy(job.pick.mesh.position); PK.y = Math.max(PK.y, LO); job.pickYaw = yawFor(job.pick, job.pickYaw); }
+    if (job.stage === 1 && h < T.swing) DP.y = dropHeight(job.dst, DP.x, DP.z);
+    if (job.stage === 2) {
+      if (h < 0.93 || !job.next) job.next = choosePick(job.nextSrc, job.next);
+      if (job.next) { NX.copy(job.next.mesh.position); job.nextYaw = yawFor(job.next, job.nextYaw); }
+    }
+    if (h < T.down) { TP.set(PK.x, lerp(HI, PK.y, span(h, 0, T.down)), PK.z); job.yaw = job.pickYaw; job.grip = 0; }
+    else if (h < T.grip) { TP.copy(PK); job.yaw = job.pickYaw; job.grip = (h - T.down) / (T.grip - T.down); }
+    else if (h < T.up) { TP.set(PK.x, lerp(PK.y, HI, span(h, T.grip, T.up)), PK.z); job.yaw = job.pickYaw; job.grip = 1; }
+    else if (h < T.swing) { const s = sweep(PK, DP, (h - T.up) / (T.swing - T.up)); job.yaw = lerp(job.pickYaw, job.dropYaw, s); job.grip = 1; }
+    else if (h < T.lower) { TP.set(DP.x, lerp(HI, DP.y, span(h, T.swing, T.lower)), DP.z); job.yaw = job.dropYaw; job.grip = 1; }
+    else if (h < T.open) { TP.copy(DP); job.yaw = job.dropYaw; job.grip = 1 - (h - T.lower) / (T.open - T.lower); }
+    else if (h < T.rise) { TP.set(DP.x, lerp(DP.y, HI, span(h, T.open, T.rise)), DP.z); job.yaw = job.dropYaw; job.grip = 0; }
+    else { const s = sweep(DP, NX, (h - T.rise) / (1 - T.rise)); job.yaw = lerp(job.dropYaw, job.nextYaw, s); job.grip = 0; }
+  }
+  /* draws every part where the physics has it; the one in the hand goes with the hand */
+  function sync(dt) {
+    for (const p of parts) {
+      const m = p.mesh, b = p.body;
+      if (p.held) {
+        const k = 1 - Math.exp(-dt / 0.06); RELP.multiplyScalar(1 - k); RELQ.slerp(SNAPQ, k);
+        m.quaternion.copy(SQ).multiply(RELQ); m.position.copy(RELP).applyQuaternion(SQ).add(SP); continue;
+      }
+      const ip = b.interpolatedPosition, iq = b.interpolatedQuaternion;
+      m.position.set(ip.x / PHY, ip.y / PHY, ip.z / PHY); m.quaternion.set(iq.x, iq.y, iq.z, iq.w);
+      const t = trays[p.tray], out = !(m.position.y > TOP - 0.05) || Math.abs(m.position.x - t.x) > 0.35 || Math.abs(m.position.z - t.z) > 0.35;   // also true if the physics ever loses track of it
+      p.lost = out ? p.lost + dt : 0; if (p.lost > 1) place(p, p.tray, TOP + 0.5);
+    }
+  }
+  /* the day starts with every part heaped in the left tray, already settled */
+  function heap(tray) {
+    parts.forEach((p, i) => place(p, tray, TOP + 0.15 + i * 0.13));
+    for (let i = 0; i < 720; i++) world.step(1 / 120);
+    for (const p of parts) still(p.body);
+    sync(0);
   }
   /* turning to look: the hand lifts, and its camera points at the person and follows them */
   const HEAD = new THREE.Vector3(), DIR = new THREE.Vector3(), UP = new THREE.Vector3(0, 1, 0), XA = new THREE.Vector3(), YA = new THREE.Vector3(), LOOKQ = new THREE.Quaternion(), BASIS = new THREE.Matrix4(), GAZE = new THREE.Vector3();
@@ -1169,9 +1322,13 @@ try {
         obj.traverse(m => { if (m.isMesh) { if (!m.geometry.attributes.normal) m.geometry.computeVertexNormals(); m.material = MAT[mat]; shade(m); } });
         holder.add(obj);
       }
-      if (!planJob()) throw new Error('the arm could not reach every point of its job');
-      workAngles(0); for (let i = 0; i < NJ; i++) qNow[i] = qWork[i];
-      real.visible = true; ready = true; window.__cell3d.robot = 'Franka Panda model';
+      heap(0);
+      job.next = choosePick(0, null); job.nextYaw = yawFor(job.next, 0); DP.set(trays[1].x, HI, trays[1].z); aim();
+      for (let i = 0; i < NJ; i++) qWork[i] = HOME[i];
+      if (reach(qWork, TP, WQ.setFromAxisAngle(UP, job.yaw).multiply(DOWN), 200, 0.15) > 3e-3) throw new Error('the arm could not reach its work');
+      for (let i = 0; i < NJ; i++) qNow[i] = qWork[i];
+      setJoints(qNow); site.getWorldPosition(SP); site.getWorldQuaternion(SQ); SPREV.copy(SP);
+      real.visible = partsG.visible = true; ready = true; window.__cell3d.robot = 'Franka Panda model';
     } catch (e) { console.warn('The robot model could not be loaded.', e); window.__cell3d.robot = 'not loaded'; }
   })();
 
@@ -1187,9 +1344,12 @@ try {
 
   const camera = new THREE.PerspectiveCamera(40, 1, 0.1, 60);
   camera.position.set(0, 1.45, 4.7); camera.lookAt(0, 0.8, 0);
-  let lw = 0, lh = 0, lf = 0, lcy = 0;
+  let lw = 0, lh = 0, lf = 0, lcy = 0, lastT = performance.now();
   window.__cell3d = {
-    robot: 'loading',
+    robot: 'loading', h: null, phi: null,
+    /* for testing */
+    job, parts: () => parts.map(p => ({ tray: p.tray, held: p.held, x: +p.mesh.position.x.toFixed(3), y: +p.mesh.position.y.toFixed(3), z: +p.mesh.position.z.toFixed(3), asleep: p.body.sleepState === 2 })),
+    probe(x, y, z, yaw) { const q = qWork.slice(); return reach(q, PV.set(x, y, z), WQ.setFromAxisAngle(UP, yaw).multiply(DOWN), 200, 0.15); },
     /* v: { w, h, F, cy, u, state, attn: -1..1, look: 0..1, gaze: [x, y, z], wave: seconds since a wave began or -1 } */
     render(v) {
       if (v.w !== lw || v.h !== lh || v.F !== lf || v.cy !== lcy) {
@@ -1200,22 +1360,25 @@ try {
         if (shift) camera.setViewOffset(v.w, v.h, 0, shift, v.w, v.h); else camera.clearViewOffset();
         camera.updateProjectionMatrix();
       }
+      const now = performance.now(), dt = clamp((now - lastT) / 1000, 0, 0.05); lastT = now;
       if (ready) {
-        const t = job(v.u); workAngles(v.u);
+        advance(v.u, v.look, dt); aim();
+        reach(qWork, TP, WQ.setFromAxisAngle(UP, job.yaw).multiply(DOWN), 8, 0.1);
         move(v.act, v.actT || 0, v.sway || 0);
         if (v.look > 0.002) lookAngles(GAZE.set(v.gaze[0], v.gaze[1], v.gaze[2])); else looking = false;
         const s = ss(clamp(v.look, 0, 1));
         for (let i = 0; i < NJ; i++) qNow[i] = qWork[i] + (looking ? (qGaze[i] - qWork[i]) * s : 0);
-        let open = t.carry ? 0 : 1;
+        let open = 1 - job.grip;
         if (EX.q7) qNow[6] = clamp(qNow[6] + EX.q7, LIM[6][0], LIM[6][1]);
-        if (EX.fingers !== null && !t.carry) open = EX.fingers;      // it never lets go of a part to gesture
+        if (EX.fingers !== null && !job.holding && job.grip === 0) open = EX.fingers;      // it never lets go of a part to gesture
         eyeRing.emissiveIntensity = EX.blink ? 0.15 : 3 + 4 * EX.pulse * Math.abs(Math.sin((v.actT || 0) * 14));
         led.emissiveIntensity = 2.2 + 2.5 * EX.pulse * Math.abs(Math.sin((v.actT || 0) * 14));
         setJoints(qNow);
         const gap = PART / 2 + 0.0005 + open * 0.0095; fingerL.position.y = gap; fingerR.position.y = -gap;
-        heldPart.visible = t.carry; restPart.visible = !t.carry;
-        const [bx, bz] = spot(t.rest); restPart.position.set(bx, TOP + PART * SCALE / 2, bz);
-      } else restPart.visible = false;
+        SPREV.copy(SP); site.getWorldPosition(SP); site.getWorldQuaternion(SQ);
+        world.step(1 / 120, dt, 6); sync(dt);
+        this.h = job.h; this.phi = Math.atan2(TP.x, TP.z);
+      }
       signals(v.state, v.attn);
       renderer.render(scene, camera);
     }
