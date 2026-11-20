@@ -467,19 +467,27 @@ async function loadModel() {
   }));
 }
 function note(t) { $('modeNote').textContent = t; }
-async function startCamera() {
-  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { note('This view can\'t use a camera. Open this page in Chrome.'); return; }
-  $('btnCam').disabled = true; note('Starting the camera…');
+/* quiet: the page asking by itself as it opens. If the answer is no, it says nothing and the demo carries on;
+   the button is still there to ask again. */
+let camTry = 0;
+async function startCamera(quiet) {
+  quiet = quiet === true;
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) { if (!quiet) note('This view can\'t use a camera. Open this page in Chrome.'); return; }
+  const mine = ++camTry;
+  if (!quiet) { $('btnCam').disabled = true; note('Starting the camera…'); }
+  let got;
   try {
-    stream = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }, audio: false });
+    got = await navigator.mediaDevices.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 }, facingMode: 'user' }, audio: false });
   } catch (e) {
+    if (mine !== camTry) return;
     $('btnCam').disabled = false;
-    note(e.name === 'NotAllowedError' ? 'Camera access was blocked. Allow the camera for this page, or open it in Chrome, then try again.'
+    if (!quiet) note(e.name === 'NotAllowedError' ? 'Camera access was blocked. Allow the camera for this page, or open it in Chrome, then try again.'
       : e.name === 'NotFoundError' ? 'No camera was found on this computer.'
       : 'The camera could not start. Close other apps using it, then try again.');
     return;
   }
-  video.srcObject = stream;
+  if (mine !== camTry) { got.getTracks().forEach(t => t.stop()); return; }      // a later try, or Back to demo, has taken over
+  stream = got; video.srcObject = stream;
   try { await video.play(); } catch (e) {}
   note('Loading person tracking…');
   try { await loadModel(); }
@@ -491,6 +499,7 @@ async function startCamera() {
   setTimeout(() => { if (mode === 'camera') note(''); }, 5000);
 }
 function stopCamera() {
+  camTry++;
   if (stream) stream.getTracks().forEach(t => t.stop());
   stream = null; video.srcObject = null; mode = 'demo'; people = []; tracks = []; ghost = null; lastPoses = []; lastBoxes = []; holdUntil = 0;
   $('btnCam').hidden = false; $('btnCam').disabled = false;
@@ -876,7 +885,7 @@ bindRange('inS', 'oS', 'sidewalk', v => `${v.toFixed(1)} m (${Math.round(v * 3.2
 const syncDetails = () => { document.body.classList.toggle('details', !!cfg.details); resize(); };
 $('inDetails').checked = !!cfg.details; syncDetails();
 $('inDetails').addEventListener('change', e => { cfg.details = e.target.checked; saveCfg(); syncDetails(); });
-$('btnCam').addEventListener('click', startCamera);
+$('btnCam').addEventListener('click', () => startCamera());
 $('btnDemo').addEventListener('click', stopCamera);
 $('btnSetup').addEventListener('click', () => { const s = $('setup'); s.hidden = !s.hidden; $('btnSetup').setAttribute('aria-expanded', String(!s.hidden)); });
 $('btnCal').addEventListener('click', () => {
@@ -889,14 +898,16 @@ const toggleKiosk = () => { document.body.classList.toggle('kiosk'); $('setup').
 $('btnKiosk').addEventListener('click', toggleKiosk);
 window.addEventListener('keydown', e => { if ((e.key === 'h' || e.key === 'H') && !e.metaKey && !e.ctrlKey) toggleKiosk(); });
 
-/* start: demo is already running; go straight to the camera if it was allowed before */
+/* start: the demo is already running. The page asks for the camera straight away, unless it has already been
+   refused for this page; until someone answers, and if the answer is no, the demo carries on. */
 resize();
 spawnWalker([3.6, G + Math.min(0.5, cfg.sidewalk * 0.45)]); demoWait = 1.4;
+const askForCamera = () => startCamera(true);
 if (navigator.permissions && navigator.permissions.query) {
-  navigator.permissions.query({ name: 'camera' }).then(r => { if (r.state === 'granted') startCamera(); }).catch(() => {});
-}
+  navigator.permissions.query({ name: 'camera' }).then(r => { if (r.state !== 'denied') askForCamera(); }).catch(askForCamera);
+} else askForCamera();
 window.__cell = {
-  get mode() { return mode; }, get state() { return state; }, robot, cfg, get people() { return people; }, loadModel, view, mem, play: name => play(name, performance.now(), true), get move() { return playing(performance.now()); },
+  get mode() { return mode; }, get state() { return state; }, robot, cfg, get people() { return people; }, loadModel, startCamera, stopCamera, view, mem, play: name => play(name, performance.now(), true), get move() { return playing(performance.now()); },
   get models() { return { detector: !!detector, pose: !!landmarker }; },
   /* for testing without a camera: feed detector boxes (in 1280x720 pixels) and poses straight into the tracker */
   simulate(dets, poses) { if (mode !== 'camera') { mode = 'camera'; people = []; tracks = []; demoWalkers = []; pointer.at = 0; } ingest(dets || [], poses || []); },

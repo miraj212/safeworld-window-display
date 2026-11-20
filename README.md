@@ -8,10 +8,10 @@ Open it: https://miraj212.github.io/safeworld-window-display/
 
 ## Trying it
 
-- With no camera, the page runs a demo. Move the mouse over the poster to play the passerby, and
-  click to wave.
-- Press **Use my camera** to have it react to you. The video is analysed in your browser and is
-  never uploaded or stored.
+- The page asks for your camera as it opens. Allow it and the robot reacts to you. The video is
+  analysed in your browser and is never uploaded or stored.
+- Without a camera the page runs a demo. Move the mouse over the poster to play the passerby, and
+  click to wave. **Use my camera** asks again.
 - **Setup** holds the distances, the camera angle and a button for each of the robot's moves.
   Press **H** to hide the controls.
 
